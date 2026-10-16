@@ -42,7 +42,35 @@
 #include "uci.h"
 #include "ucioption.h"
 
+#if defined(_WIN32)
+    #if !defined(NOMINMAX)
+        #define NOMINMAX
+    #endif
+    #if !defined(WIN32_LEAN_AND_MEAN)
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <windows.h>
+#endif
+
 namespace Stockfish {
+
+namespace {
+
+// Forces the process priority class to "Above Normal" (Windows only). GUIs
+// usually create the engine with their own priority setting, and some of them
+// re-apply it later, so this is called both at start-up and before every
+// search; the last writer wins and the engine makes sure it is the last one.
+// On non-Windows platforms raising priority needs elevated rights, so it is a
+// no-op there.
+void force_process_priority() {
+#if defined(_WIN32)
+    HANDLE proc = GetCurrentProcess();
+    if (GetPriorityClass(proc) != ABOVE_NORMAL_PRIORITY_CLASS)
+        SetPriorityClass(proc, ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
+}
+
+}  // namespace
 
 namespace NN = Eval::NNUE;
 
@@ -56,7 +84,7 @@ constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
 Engine::Engine(std::optional<std::filesystem::path> path) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
     states(new std::deque<StateInfo>(1)),
     threads(),
     networkFile{std::nullopt, ""},
@@ -65,27 +93,13 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     pos.set(StartFEN, &states->back());
 
     options.add(  //
-      "Debug Log File", Option("", [](const Option& o) {
-          start_logger(path_from_utf8(std::string(o)));
-          return std::nullopt;
-      }));
-
-    options.add(  //
-      "NumaPolicy", Option("hardware", [this](const Option& o) {
-          if (!set_numa_config_from_option(o))
-              return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
-          return numa_config_information_as_string() + "\n"
-               + thread_allocation_information_as_string();
-      }));
-
-    options.add(  //
       "Threads", Option(1, 1, MaxThreads, [this](const Option&) {
           resize_threads();
           return thread_allocation_information_as_string();
       }));
 
     options.add(  //
-      "Hash", Option(16, 1, MaxHashMB, [this](const Option& o) {
+      "Hash", Option(1024, 1, MaxHashMB, [this](const Option& o) {
           set_tt_size(o);
           return std::nullopt;
       }));
@@ -97,25 +111,15 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "Ponder", Option(false));
+      "Ponder", Option(true));
 
     options.add(  //
       "MultiPV", Option(1, 1, MAX_MOVES));
 
-    options.add("Move Overhead", Option(10, 0, 5000));
-
-    options.add("nodestime", Option(0, 0, 10000));
-
-    options.add(  //
-      "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
-          RuleConfig::mateThreatDepth = int(o);
-          return std::nullopt;
-      }));
-
     options.add(  //
       "Repetition Rule",
-      Option("SkyRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
-             "SkyRule", [](const Option& o) {
+      Option("SkyRule var SkyRule var AsianRule var YitianRule var ChineseRule var ComputerRule var AllowChase var NoJudgement",
+             "SkyRule", [this](const Option& o) {
                  using RR = RuleConfig::RepetitionRule;
 
                  RuleConfig::repetitionRule =
@@ -127,19 +131,37 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                    : o == "NoJudgement" ? RR::NO_JUDGEMENT
                                         : RR::ASIAN;
 
-                 // Rule60MaxPly couplings: AsianRule and SkyRule default to rule120,
-                 // YitianRule defaults to rule140.
+                 // Couplings for AsianRule, SkyRule and YitianRule:
+                 // AsianRule/SkyRule use rule120 and YitianRule uses rule150
+                 // (Rule60MaxPly stays freely adjustable 90-150), and the
+                 // Sixty Move Rule is switched on for all three rules. The
+                 // coupled options are assigned through the OptionsMap so that
+                 // GUIs reflect the new defaults and the options' own callbacks
+                 // keep RuleConfig in sync.
                  if (RuleConfig::repetitionRule == RR::ASIAN
-                     || RuleConfig::repetitionRule == RR::SKY)
-                     RuleConfig::rule60MaxPly = 120;
-                 else if (RuleConfig::repetitionRule == RR::YITIAN)
-                     RuleConfig::rule60MaxPly = 140;
-                 // Sixty Move Rule is off by default for YitianRule.
-                 if (RuleConfig::repetitionRule == RR::YITIAN)
-                     RuleConfig::sixtyMoveRule = false;
+                     || RuleConfig::repetitionRule == RR::SKY
+                     || RuleConfig::repetitionRule == RR::YITIAN)
+                 {
+                     const char* rule60Ply =
+                       RuleConfig::repetitionRule == RR::YITIAN ? "150" : "120";
+
+                     if (auto it = options.options_map.find("Rule60MaxPly");
+                         it != options.options_map.end())
+                         it->second = std::string(rule60Ply);
+
+                     if (auto it = options.options_map.find("Sixty Move Rule");
+                         it != options.options_map.end())
+                         it->second = std::string("true");
+                 }
 
                  return std::nullopt;
              }));
+
+    options.add(  //
+      "Mate Threat Depth", Option(0, 0, 10, [](const Option& o) {
+          RuleConfig::mateThreatDepth = int(o);
+          return std::nullopt;
+      }));
 
     options.add(  //
       "Draw Rule",
@@ -157,29 +179,81 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Sixty Move Rule", Option(true, [](const Option& o) {
-          RuleConfig::sixtyMoveRule =
-            int(o) != 0 && RuleConfig::repetitionRule != RuleConfig::RepetitionRule::YITIAN;
+          // The natural-move draw defaults on for every rule (including
+          // YitianRule) and can be freely toggled by the GUI; selecting
+          // AsianRule/SkyRule/YitianRule always switches it back on via the
+          // Repetition Rule coupling.
+          RuleConfig::sixtyMoveRule = int(o) != 0;
+          RuleConfig::update_rule60_limit();
           return std::nullopt;
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(120, 1, 150, [](const Option& o) {
-          using RR = RuleConfig::RepetitionRule;
-          // AsianRule and SkyRule are pinned to rule120.
-          RuleConfig::rule60MaxPly =
-            (RuleConfig::repetitionRule == RR::ASIAN || RuleConfig::repetitionRule == RR::SKY)
-              ? 120
-              : int(o);
+      "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
+          // Defaults to rule120 for AsianRule/SkyRule and rule150 for
+          // YitianRule; freely adjustable between 90 and 150 plies.
+          RuleConfig::rule60MaxPly = int(o);
+          RuleConfig::update_rule60_limit();
           return std::nullopt;
       }));
 
-    options.add("UCI_ShowWDL", Option(false));
+    options.add(  //
+      "Rule60BucketMargin", Option(64, 0, 150, [](const Option& o) {
+          // Plies before the natural-move limit at which the TT key starts to
+          // depend on the rule60 counter. Larger = safer, smaller = more TT
+          // sharing. A value >= Rule60MaxPly - 14 reproduces the original
+          // Pikafish keys (bucketing from ply 14). Send ucinewgame after
+          // changing it so stale TT entries are not mixed in.
+          RuleConfig::rule60BucketMargin = int(o);
+          RuleConfig::update_rule60_limit();
+          return std::nullopt;
+      }));
+
+    options.add("UCI_ShowWDL", Option(true));
+
+    options.add(  //
+      "ScoreType",
+      Option("WinRate var Elo var WinRate", "WinRate", [](const Option& o) {
+          UCIEngine::scoreTypeMode = o == "WinRate" ? UCIEngine::ScoreTypeMode::WinRate
+                                                    : UCIEngine::ScoreTypeMode::Elo;
+          return std::nullopt;
+      }));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
           load_network(path_from_utf8(std::string(o)));
           return std::nullopt;
       }));
+	  
+    options.add(  //
+      "NumaPolicy", Option("auto", [this](const Option& o) {
+          if (!set_numa_config_from_option(o))
+              return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
+          return numa_config_information_as_string() + "\n"
+               + thread_allocation_information_as_string();
+      }));
+	  
+    options.add("Move Overhead", Option(10, 0, 5000));
+
+    options.add("nodestime", Option(0, 0, 10000));
+	
+    options.add(  //
+      "Debug Log File", Option("", [](const Option& o) {
+          start_logger(path_from_utf8(std::string(o)));
+          return std::nullopt;
+      }));
+
+    // Option callbacks only run on setoption. Pull the numeric rule defaults declared
+    // above into RuleConfig now, so the engine behaves exactly as the GUI displays even
+    // before any setoption arrives (bench included). Combo defaults ("Repetition Rule",
+    // "Draw Rule") must still match the initialisers in position.cpp by hand.
+    RuleConfig::mateThreatDepth    = int(options["Mate Threat Depth"]);
+    RuleConfig::sixtyMoveRule      = int(options["Sixty Move Rule"]) != 0;
+    RuleConfig::rule60MaxPly       = int(options["Rule60MaxPly"]);
+    RuleConfig::rule60BucketMargin = int(options["Rule60BucketMargin"]);
+    RuleConfig::update_rule60_limit();
+
+    force_process_priority();
 
     threads.clear();
     threads.ensure_network_replicated();
@@ -195,6 +269,7 @@ std::variant<u64, PositionSetError> Engine::perft(const std::string& fen, Depth 
 void Engine::go(Search::LimitsType& limits) {
     assert(limits.perft == 0);
     verify_network();
+    force_process_priority();  // re-assert in case the GUI changed it after launch
 
     threads.start_thinking(pos, states, limits);
 }
@@ -374,13 +449,6 @@ const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 
 std::string Engine::fen() const { return pos.fen(); }
-
-std::pair<bool, Value> Engine::debug_rule_check() {
-    Value result = VALUE_NONE;
-    bool terminal = pos.rule_judge(result, 0);
-    return {terminal, result};
-}
-
 
 std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
 
