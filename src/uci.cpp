@@ -591,22 +591,12 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
         double l  = 1000.0 / (1.0 + std::exp(e2));
         double p  = (w + (1000.0 - w - l) / 2.0) / 1000.0;  // 0.0 ~ 1.0
 
-        // 走子方胜率 (整数百分比)。>= 50 为正, < 50 为负, 让 GUI 用颜色直接
-        // 表示走子方是优势还是劣势。
         int pct    = int(std::round(p * 100.0));
-		int signedPct = pct >= 50 ? pct : -pct;
 		
-		if (pos.side_to_move() == WHITE)
-		{
-			return signedPct;
-		} else {
-			return -signedPct;
-		}
-
         // 大多数 GUI 在黑方走子时会把 cp 取负, 以便一律按红方视角显示。
         // 这里对黑方预先取负, GUI 再取负之后, 显示出来的仍然是走子方胜率
         // 及上面的正负约定。(假设 GUI 以红方在下方、按走子方取负。)
-        // return pos.side_to_move() == WHITE ? signedPct : -signedPct;
+        return pos.side_to_move() == WHITE ? pct : -pct;
     }
 
     // Original
