@@ -902,6 +902,8 @@ Value Search::Worker::search(
                  && depth > 5)
         {
             // If such a mismatch is the only reason cutoff failed, the TT entry is now useless
+            // (*Scaler) This is very close to secondary aging, a known antiscaler. The depth
+            // and window conditions seem to be key to decent scaling.
             ttWriter.penalize(1);
         }
     }
