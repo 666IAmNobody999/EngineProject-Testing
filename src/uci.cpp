@@ -594,7 +594,7 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
         // 走子方胜率 (整数百分比)。>= 50 为正, < 50 为负, 让 GUI 用颜色直接
         // 表示走子方是优势还是劣势。
         int pct    = int(std::round(p * 100.0));
-		if (pos.side_to_move() == WHITE ?) 
+		if (pos.side_to_move() == WHITE) 
 		{
 			int signedPct = pct >= 50 ? pct : -pct;
 		} else {
