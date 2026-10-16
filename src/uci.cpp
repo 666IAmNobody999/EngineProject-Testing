@@ -599,7 +599,7 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
         // 大多数 GUI 在黑方走子时会把 cp 取负, 以便一律按红方视角显示。
         // 这里对黑方预先取负, GUI 再取负之后, 显示出来的仍然是走子方胜率
         // 及上面的正负约定。(假设 GUI 以红方在下方、按走子方取负。)
-        return pos.side_to_move() == WHITE ? -signedPct : signedPct;
+        return pos.side_to_move() == WHITE ? signedPct : -signedPct;
     }
 
     // Original
