@@ -1558,6 +1558,7 @@ Value Position::detect_sky_cycle(int d, int ply) {
     const bool mixedB = B && (checked(s1) != checked(s3));
     const bool differentA = mixedA
                          && ((s2->skyChasers & u16(~s0->skyCheckers))
+                             || (s0->skyChasers & u16(~s2->skyCheckers)));
     const bool differentB = mixedB
                          && ((s3->skyChasers & u16(~s1->skyCheckers))
                              || (s1->skyChasers & u16(~s3->skyCheckers)));
