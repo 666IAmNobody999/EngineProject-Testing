@@ -76,10 +76,10 @@ Value scale_evaluation(Value nnue, int optimism, const Position& pos) {
     // Scale the combined evaluation by total material
     int material = PawnValue * pos.count<PAWN>() + AdvisorValue * pos.count<ADVISOR>()
                  + BishopValue * pos.count<BISHOP>() + pos.major_material();
-    int v        = base_eval * i64(80030 + material) / 80030;
+    v += i64(material) * v / 80030;
 
     // Damp down the evaluation linearly when shuffling
-    v += i64(material) * v / 80030;
+    v -= v * pos.rule60_count() / 244;
 
     // Guarantee that the evaluation does not hit the mate range
     v = std::clamp(v, VALUE_MATED_IN_MAX_PLY + 1, VALUE_MATE_IN_MAX_PLY - 1);
