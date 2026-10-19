@@ -134,6 +134,7 @@ struct SkyChaseMap {
     }
 };
 
+using ChaseMap = SkyChaseMap;
 class TranspositionTable;
 struct SharedHistories;
 
@@ -158,6 +159,7 @@ struct StateInfo {
     StateInfo* previous;
     Bitboard   blockersForKing[COLOR_NB];
     Bitboard   pinners[COLOR_NB];
+    Bitboard   checkSquares[PIECE_TYPE_NB];
     Bitboard   threats[PIECE_TYPE_NB];
     bool       threatsComputed;
     bool       needFullCheck;
