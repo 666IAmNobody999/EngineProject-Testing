@@ -1383,7 +1383,7 @@ bool Position::has_mate_threat(Depth d) {
         return false;
 
     StateInfo tempSt[2];
-    for (const auto& check : MoveList<LEGAL>(*this))
+    for (const auto& check : MoveList<ALL>(*this))
     {
         if (!gives_check(check))
             continue;
@@ -1391,7 +1391,7 @@ bool Position::has_mate_threat(Depth d) {
         do_move(check, tempSt[0]);
         bool solvable = false;
 
-        for (const auto& evasion : MoveList<LEGAL>(*this))
+        for (const auto& evasion : MoveList<ALL>(*this))
         {
             do_move(evasion, tempSt[1]);
             solvable = !has_mate_threat(d + 1);
