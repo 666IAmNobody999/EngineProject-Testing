@@ -233,7 +233,7 @@ class Position {
     Bitboard attackers_to(Square s) const;
     Bitboard attackers_to(Square s, Bitboard occupied) const;
     template<Color c>
-    void     update_blockers() const;    bool  pseudo_legal(const Move m) const;
+    void     update_blockers() const;
     Bitboard checkers_to(Color c, Square s) const;
     Bitboard checkers_to(Color c, Square s, Bitboard occupied) const;
     Bitboard xattacks_by(PieceType pt, Color c, Bitboard occupied) const;
