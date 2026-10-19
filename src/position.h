@@ -134,7 +134,6 @@ struct SkyChaseMap {
     }
 };
 
-using ChaseMap = SkyChaseMap;
 class TranspositionTable;
 struct SharedHistories;
 
@@ -162,7 +161,6 @@ struct StateInfo {
     Bitboard   checkSquares[PIECE_TYPE_NB];
     Bitboard   threats[PIECE_TYPE_NB];
     bool       threatsComputed;
-    bool       needFullCheck;
     Piece      capturedPiece;
 
     // SkyRule historical move state reconstructed from the supplied custom binary.
