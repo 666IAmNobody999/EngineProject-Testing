@@ -174,10 +174,9 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
         // Binding threads may be problematic when there's multiple NUMA nodes and
         // multiple Stockfish instances running. In particular, if each instance
         // runs a single thread then they would all be mapped to the first NUMA node.
-        // This is undesirable, and so when NumaPolicy is "auto" we do not bind the
-        // threads to processors unless we know for sure that we span NUMA nodes and
-        // replication is required. The default setting "hardware" (like "system")
-        // always binds threads to their respective hardware domains.
+        // This is undesirable, and so the default behaviour (i.e. when the user does not
+        // change the NumaConfig UCI setting) is to not bind the threads to processors
+        // unless we know for sure that we span NUMA nodes and replication is required.
         const std::string numaPolicy(sharedState.options["NumaPolicy"]);
         const bool        doBindThreads = [&]() {
             if (numaPolicy == "none")
@@ -186,7 +185,7 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
             if (numaPolicy == "auto")
                 return numaConfig.suggests_binding_threads(requested);
 
-            // numaPolicy == "hardware", "system", or explicitly set by the user
+            // numaPolicy == "system", or explicitly set by the user
             return true;
         }();
 
@@ -309,7 +308,7 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states, Search::Lim
     }
 
     if (rootMoves.empty())
-        for (const auto& m : MoveList<LEGAL>(pos))
+        for (const auto& m : MoveList<ALL>(pos))
             rootMoves.emplace_back(m);
 
     // After ownership transfer 'states' becomes empty, so if we stop the search
