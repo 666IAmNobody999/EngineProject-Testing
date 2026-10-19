@@ -21,7 +21,6 @@
 
 #include <array>
 #include <cassert>
-#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <iosfwd>
@@ -35,7 +34,7 @@
 #include "attacks.h"
 #include "bitboard.h"
 #include "misc.h"
-#include "nnue/features/k6r2nc2.h"
+#include "nnue/features/half_ka_v2_hm.h"
 #include "types.h"
 
 namespace Stockfish {
@@ -65,35 +64,6 @@ extern DrawRule       drawRule;
 extern int            mateThreatDepth;
 extern bool           sixtyMoveRule;
 extern int            rule60MaxPly;
-
-// Effective natural-move limit consumed by every hot path (rule_judge, TT
-// cutoff gate, value_from_tt, adjust_key60, FEN parsing). It is derived once
-// from sixtyMoveRule/rule60MaxPly in update_rule60_limit() so the search only
-// ever performs a single integer compare against one cached global. When the
-// rule is switched off it becomes RULE60_UNLIMITED, which turns all of those
-// branches into no-ops without any extra "is the rule enabled" test.
-constexpr int RULE60_UNLIMITED = 1 << 15;
-extern int    rule60Limit;
-
-// TT key bucketing for the natural-move rule (see adjust_key60).
-// A position's value only depends on the rule60 counter once the remaining
-// plies (limit - rule60) are within reach of the search. Below that point the
-// counter cannot influence the result, so the TT key is left untouched and
-// entries are shared across counters. rule60BucketMargin is "how many plies
-// before the limit bucketing starts"; it should exceed the typical seldepth.
-// The start is never earlier than ply 14 (the original Pikafish behaviour),
-// so margin >= limit - 14 reproduces the original keys exactly.
-extern int rule60BucketMargin;  // UCI "Rule60BucketMargin"
-extern int rule60BucketStart;   // derived, read by adjust_key60
-
-inline bool rule60_enabled() { return rule60Limit != RULE60_UNLIMITED; }
-
-inline void update_rule60_limit() {
-    rule60Limit = sixtyMoveRule && rule60MaxPly > 0 ? rule60MaxPly : RULE60_UNLIMITED;
-
-    const int start   = rule60Limit - rule60BucketMargin;
-    rule60BucketStart = !rule60_enabled() ? RULE60_UNLIMITED : start < 14 ? 14 : start;
-}
 
 inline bool chinese_like() {
     return repetitionRule == RepetitionRule::CHINESE || repetitionRule == RepetitionRule::SKY;
@@ -159,8 +129,7 @@ struct StateInfo {
     Bitboard   blockersForKing[COLOR_NB];
     Bitboard   pinners[COLOR_NB];
     Bitboard   checkSquares[PIECE_TYPE_NB];
-    Bitboard   threats[PIECE_TYPE_NB];
-    bool       threatsComputed;
+    bool       needFullCheck;
     Piece      capturedPiece;
 
     // SkyRule historical move state reconstructed from the supplied custom binary.
@@ -236,11 +205,12 @@ class Position {
     void     update_blockers() const;
     Bitboard checkers_to(Color c, Square s) const;
     Bitboard checkers_to(Color c, Square s, Bitboard occupied) const;
-    Bitboard xattacks_by(PieceType pt, Color c, Bitboard occupied) const;
-    Bitboard threats_by(PieceType pt) const;
+    template<PieceType Pt>
+    Bitboard attacks_by(Color c) const;
 
     // Properties of moves
     bool  legal(Move m) const;
+    bool  pseudo_legal(const Move m) const;
     bool  capture(Move m) const;
     bool  gives_check(Move m) const;
     Piece moved_piece(Move m) const;
@@ -296,8 +266,7 @@ class Position {
    private:
     // Initialization helpers (used while setting up a position)
     void set_state() const;
-    void set_extra_bitboards() const;
-    void set_threats() const;
+    void set_check_info() const;
 
     // Other helpers
     template<bool ComputeRay = true>
@@ -306,10 +275,7 @@ class Position {
     std::pair<Piece, int> do_move(Move m);
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
-    // Rolls the current line back by d plies (stopping at a capture) and fills the
-    // SkyRule masks of every StateInfo passed. assignIds=false continues an earlier
-    // rollback with the identities it already established (no re-numbering).
-    void                  set_sky_info(int d, bool assignIds = true);
+    void                  set_sky_info(int d);
     Value                 detect_sky_cycle(int d, int ply = 0);
     // The extra bitboard b masks out checkers that should be ignored (e.g. the
     // pre-existing checkers on our own king), so that we only flag moves that
@@ -390,29 +356,17 @@ inline Bitboard Position::checkers_to(Color c, Square s) const {
     return checkers_to(c, s, pieces());
 }
 
-// Includes X-ray attacks through the king of color ~c.
-inline Bitboard Position::xattacks_by(PieceType pt, Color c, Bitboard occupied) const {
+template<PieceType Pt>
+inline Bitboard Position::attacks_by(Color c) const {
 
     Bitboard threats   = 0;
-    Bitboard attackers = pieces(c, pt);
+    Bitboard attackers = pieces(c, Pt);
     while (attackers)
-    {
-        Square s = pop_lsb(attackers);
-        if (pt == PAWN)
-            threats |= Attacks::attacks_bb(PAWN, s, c);
-        else if (pt == KING)
-            threats |=
-              Attacks::attacks_bb(KING, s) | (Attacks::attacks_bb(ROOK, s, occupied) & file_bb(s));
+        if (Pt == PAWN)
+            threats |= Attacks::attacks_bb(PAWN, pop_lsb(attackers), c);
         else
-            threats |= Attacks::attacks_bb(pt, s, occupied);
-    }
+            threats |= Attacks::attacks_bb(Pt, pop_lsb(attackers), pieces());
     return threats;
-}
-
-inline Bitboard Position::threats_by(PieceType pt) const {
-    if (!st->threatsComputed)
-        set_threats();
-    return st->threats[pt];
 }
 
 inline Bitboard Position::checkers() const { return st->checkersBB; }
@@ -427,14 +381,7 @@ inline Key Position::key() const { return adjust_key60(st->key); }
 
 template<bool AfterMove>
 inline Key Position::adjust_key60(Key k) const {
-    // The rule60 bucket in the key is a graph-history-interaction guard for the
-    // natural-move rule. With the rule off the counter can no longer change the
-    // value of a position, so perturbing the key would only fragment the TT and
-    // lower the hit rate in long non-capturing lines; skip it in that case.
-    // Bucketing starts at rule60BucketStart (RULE60_UNLIMITED when the rule
-    // is off, so the branch is then never taken).
-    const int start = RuleConfig::rule60BucketStart - AfterMove;
-    return (st->rule60 < start ? k : k ^ make_key((st->rule60 - start) / 8))
+    return (st->rule60 < (14 - AfterMove) ? k : k ^ make_key((st->rule60 - (14 - AfterMove)) / 8))
          ^ (filter[k] ? make_key(14) : 0);
 }
 
@@ -468,7 +415,7 @@ inline void Position::put_piece(Piece pc, Square s, DirtyThreats* const dts) {
     byColorBB[color_of(pc)] |= s;
     pieceCount[pc]++;
     pieceCount[make_piece(color_of(pc), ALL_PIECES)]++;
-    midEncoding[color_of(pc)] += Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][s];
+    midEncoding[color_of(pc)] += Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][s];
 
     if (dts)
         update_piece_threats(pc, true, s, dts);
@@ -487,7 +434,7 @@ inline void Position::remove_piece(Square s, DirtyThreats* const dts) {
     board[s] = NO_PIECE;
     pieceCount[pc]--;
     pieceCount[make_piece(color_of(pc), ALL_PIECES)]--;
-    midEncoding[color_of(pc)] -= Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][s];
+    midEncoding[color_of(pc)] -= Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][s];
 }
 
 inline void Position::move_piece(Square from, Square to, DirtyThreats* const dts) {
@@ -503,8 +450,8 @@ inline void Position::move_piece(Square from, Square to, DirtyThreats* const dts
     byColorBB[color_of(pc)] ^= fromTo;
     board[from] = NO_PIECE;
     board[to]   = pc;
-    midEncoding[color_of(pc)] -= Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][from];
-    midEncoding[color_of(pc)] += Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][to];
+    midEncoding[color_of(pc)] -= Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][from];
+    midEncoding[color_of(pc)] += Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][to];
 
     if (dts)
         update_piece_threats(pc, true, to, dts);

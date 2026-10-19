@@ -53,14 +53,11 @@ namespace RuleConfig {
 // AsianRule/SkyRule couple to rule120 and YitianRule couples to rule150;
 // the Sixty Move Rule stays on for all three (enforced in engine.cpp
 // couplings).
-RepetitionRule repetitionRule  = RepetitionRule::SKY;
+RepetitionRule repetitionRule  = RepetitionRule::YITIAN;
 DrawRule       drawRule        = DrawRule::NONE;
-int            mateThreatDepth = 0;
+int            mateThreatDepth = 10;
 bool           sixtyMoveRule   = true;
-int            rule60MaxPly    = 120;
-int            rule60Limit     = 120;  // keep in sync via update_rule60_limit()
-int            rule60BucketMargin = 64;
-int            rule60BucketStart  = 120 - 64;
+int            rule60MaxPly    = 150;
 }  // namespace RuleConfig
 
 namespace Zobrist {
@@ -153,7 +150,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     std::memset(si, 0, sizeof(StateInfo));
     st = si;
 
-    midEncoding[WHITE] = midEncoding[BLACK] = Eval::NNUE::Features::K6R2NC2::BalanceEncoding;
+    midEncoding[WHITE] = midEncoding[BLACK] = Eval::NNUE::Features::HalfKAv2_hm::BalanceEncoding;
 
     ss >> std::noskipws;
 
@@ -232,7 +229,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 
         for (PieceType pt : {ADVISOR, PAWN, BISHOP, KING})
         {
-            Bitboard valid = Eval::NNUE::Features::K6R2NC2::ValidBB[make_piece(c, pt)];
+            Bitboard valid = Eval::NNUE::Features::HalfKAv2_hm::ValidBB[make_piece(c, pt)];
             // NNUE mirroring feature does not allow white king on the right flank, we allow here.
             if (c == WHITE && pt == KING)
                 valid = HalfBB[WHITE] & Palace;
@@ -262,8 +259,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
 
-    // With the natural-move rule off any non-negative counter is acceptable.
-    if (st->rule60 < 0 || st->rule60 >= RuleConfig::rule60Limit || st->rule60 > 100000)
+    if (st->rule60 < 0 || st->rule60 > RuleConfig::rule60MaxPly - 1)
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
 
     if (gamePly < 0 || gamePly > 100000)
@@ -284,21 +280,23 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 }
 
 
-// Sets pinners, where stm can give check and invalidates the threat cache.
-void Position::set_extra_bitboards() const {
+// Sets king attacks to detect if a move gives check
+void Position::set_check_info() const {
 
     update_blockers<WHITE>();
     update_blockers<BLACK>();
 
     Square ksq = king_square(~sideToMove);
 
+    // We have to take special cares about the hollow cannons and checks
+    st->needFullCheck =
+      checkers() || (attacks_bb(ROOK, king_square(sideToMove)) & pieces(~sideToMove, CANNON));
+
     st->checkSquares[PAWN]   = attacks_bb(PAWN_TO, ksq, sideToMove);
     st->checkSquares[KNIGHT] = attacks_bb(KNIGHT_TO, ksq, pieces());
     st->checkSquares[CANNON] = attacks_bb(CANNON, ksq, pieces());
     st->checkSquares[ROOK]   = attacks_bb(ROOK, ksq, pieces());
     st->checkSquares[KING] = st->checkSquares[ADVISOR] = st->checkSquares[BISHOP] = 0;
-	
-    st->threatsComputed = false;
 
     Bitboard hollowCannons = st->checkSquares[ROOK] & pieces(sideToMove, CANNON);
     if (hollowCannons)
@@ -309,21 +307,6 @@ void Position::set_extra_bitboards() const {
         for (PieceType pt = ROOK; pt < KING; ++pt)
             st->checkSquares[pt] |= hollowCannonDiscover;
     }
-}
-
-
-// Computes the threat cache only when move generation or scoring needs it.
-void Position::set_threats() const {
-
-    Bitboard occ            = pieces() ^ king_square(sideToMove);
-    st->threats[ALL_PIECES] = st->threats[PAWN]     = xattacks_by(PAWN, ~sideToMove, occ);
-    st->threats[ALL_PIECES] |= st->threats[BISHOP]  = xattacks_by(BISHOP, ~sideToMove, occ);
-    st->threats[ALL_PIECES] |= st->threats[ADVISOR] = xattacks_by(ADVISOR, ~sideToMove, occ);
-    st->threats[ALL_PIECES] |= st->threats[KNIGHT]  = xattacks_by(KNIGHT, ~sideToMove, occ);
-    st->threats[ALL_PIECES] |= st->threats[CANNON]  = xattacks_by(CANNON, ~sideToMove, occ);
-    st->threats[ALL_PIECES] |= st->threats[ROOK]    = xattacks_by(ROOK, ~sideToMove, occ);
-    st->threats[ALL_PIECES] |= st->threats[KING]    = xattacks_by(KING, ~sideToMove, occ);
-    st->threatsComputed                             = true;
 }
 
 
@@ -340,7 +323,7 @@ void Position::set_state() const {
     st->checkersBB = checkers_to(~sideToMove, king_square(sideToMove));
     st->move       = Move::none();
 
-    set_extra_bitboards();
+    set_check_info();
 
     for (Bitboard b = pieces(); b;)
     {
@@ -464,12 +447,43 @@ Bitboard Position::checkers_to(Color c, Square s, Bitboard occupied) const {
 }
 
 
-// Takes a random move and tests whether the move is legal. It is used to validate moves
-// from TT that can be corrupted due to SMP concurrent access or hash position key aliasing.
+// Tests whether a pseudo-legal move is legal
 bool Position::legal(Move m) const {
 
-    if (!m.is_ok() || !is_ok(m.from_sq()) || !is_ok(m.to_sq()))
-        return false;
+    assert(m.is_ok());
+
+    Color    us       = sideToMove;
+    Square   from     = m.from_sq();
+    Square   to       = m.to_sq();
+    Bitboard occupied = (pieces() ^ from) | to;
+
+    assert(color_of(moved_piece(m)) == us);
+    assert(piece_on(king_square(us)) == make_piece(us, KING));
+
+    // If the moving piece is a king, check whether the destination square is
+    // attacked by the opponent.
+    if (type_of(piece_on(from)) == KING)
+        return !(checkers_to(~us, to, occupied));
+
+    // If we don't need full check. A non-king move is always legal when either:
+    // 1. Not moving a pinned piece.
+    // 2. Moving a pinned non-cannon piece and aligned with king.
+    // 3. Moving a pinned cannon and aligned with king but it's not a capture move.
+    if (!st->needFullCheck
+        && (!(blockers_for_king(us) & from)
+            || (((type_of(piece_on(from)) != CANNON) || !capture(m))
+                && aligned(from, to, king_square(us)))))
+        return true;
+
+    // A non-king move is legal if the king is not under attack after the move.
+    return !(checkers_to(~us, king_square(us), occupied) & ~square_bb(to));
+}
+
+
+// Takes a random move and tests whether the move is
+// pseudo-legal. It is used to validate moves from TT that can be corrupted
+// due to SMP concurrent access or hash position key aliasing.
+bool Position::pseudo_legal(const Move m) const {
 
     Color  us   = sideToMove;
     Square from = m.from_sq();
@@ -499,29 +513,14 @@ bool Position::legal(Move m) const {
     else if (!(attacks_bb(type_of(pc), from, pieces()) & to))
         return false;
 
-    Bitboard occupied = (pieces() ^ from) | to;
+    if (checkers())
+        return MoveList<EVASIONS>(*this).contains(m);
 
-    // If the moving piece is a king, check whether the destination square is
-    // attacked by the opponent.
-    if (type_of(piece_on(from)) == KING)
-        return !(to & threats_by(ALL_PIECES));
-
-     // Moving an unpinned piece cannot expose an attack.
-    if (!checkers() && !(blockers_for_king(us) & from))
-    {
-        // Only a quiet move onto a king ray can create a new cannon screen.
-        if (capture(m) || !(attacks_bb(ROOK, king_square(us)) & to))
-            return true;
-
-        return !(attacks_bb(CANNON, king_square(us), occupied) & pieces(~us, CANNON));
-    }
-
-    // A non-king move is legal if the king is not under attack after the move.
-    return !(checkers_to(~us, king_square(us), occupied) & ~square_bb(to));
+    return true;
 }
 
 
-// Tests whether a legal move gives a check
+// Tests whether a pseudo-legal move gives a check
 bool Position::gives_check(Move m) const {
 
     assert(m.is_ok());
@@ -714,7 +713,7 @@ void Position::do_move(Move                      m,
     sideToMove = ~sideToMove;
 
     // Update king attacks used for fast check detection
-    set_extra_bitboards();
+    set_check_info();
 
     assert(pos_is_ok());
 
@@ -960,7 +959,7 @@ void Position::do_null_move(StateInfo& newSt) {
 
     sideToMove = ~sideToMove;
 
-    set_extra_bitboards();
+    set_check_info();
 
     assert(pos_is_ok());
 }
@@ -1146,10 +1145,7 @@ void Position::undo_move(Move m, Piece captured, int id) {
 }
 
 
-// Tests whether a move is legal for chase detection.
-// The extra bitboard b masks out checkers that should be ignored (e.g. the
-// pre-existing checkers on our own king), so that we only flag moves that
-// create NEW attacks on the king. Ported from the "perfect Asian rule" reference.
+// Tests whether a pseudo-legal move is chase legal
 bool Position::chase_legal(Move m, Bitboard b) const {
 
     assert(m.is_ok());
@@ -1192,8 +1188,6 @@ SkyChaseMap Position::sky_chased(Color c) {
 
     std::swap(c, sideToMove);
 
-    const bool chineseLike = RuleConfig::chinese_like();
-
     Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
     while (attackers)
     {
@@ -1211,7 +1205,7 @@ SkyChaseMap Position::sky_chased(Color c) {
         Bitboard candidates = 0;
         if (attackerType == KNIGHT || attackerType == CANNON)
             candidates = attacks & pieces(~sideToMove, ROOK);
-        if (chineseLike && (attackerType == ADVISOR || attackerType == BISHOP))
+        if (RuleConfig::chinese_like() && (attackerType == ADVISOR || attackerType == BISHOP))
             candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
 
         attacks ^= candidates;
@@ -1287,8 +1281,6 @@ ChaseMap Position::chased(Color c) {
 
     std::swap(c, sideToMove);
 
-    const bool chineseLike = RuleConfig::chinese_like();
-
     // King and pawn can legally perpetual chase.
     Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
     while (attackers)
@@ -1309,7 +1301,7 @@ ChaseMap Position::chased(Color c) {
         Bitboard candidates = 0;
         if (attackerType == KNIGHT || attackerType == CANNON)
             candidates = attacks & pieces(~sideToMove, ROOK);
-        if (chineseLike && (attackerType == ADVISOR || attackerType == BISHOP))
+        if (RuleConfig::chinese_like() && (attackerType == ADVISOR || attackerType == BISHOP))
             candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
 
         attacks ^= candidates;
@@ -1383,7 +1375,7 @@ bool Position::has_mate_threat(Depth d) {
         return false;
 
     StateInfo tempSt[2];
-    for (const auto& check : MoveList<ALL>(*this))
+    for (const auto& check : MoveList<LEGAL>(*this))
     {
         if (!gives_check(check))
             continue;
@@ -1391,7 +1383,7 @@ bool Position::has_mate_threat(Depth d) {
         do_move(check, tempSt[0]);
         bool solvable = false;
 
-        for (const auto& evasion : MoveList<ALL>(*this))
+        for (const auto& evasion : MoveList<LEGAL>(*this))
         {
             do_move(evasion, tempSt[1]);
             solvable = !has_mate_threat(d + 1);
@@ -1413,20 +1405,15 @@ bool Position::has_mate_threat(Depth d) {
 // This mirrors the supplied custom executable: check and chase are classified as mutually
 // exclusive move types; checking moves use victims=0xffff and keep checker identities,
 // while non-checking moves store the exact newly-created victim/chaser relation.
-void Position::set_sky_info(int d, bool assignIds) {
+void Position::set_sky_info(int d) {
 
     // Reassign compact per-color identities in the current position. A repetition cycle
-    // cannot contain a capture, therefore these identities remain stable while we roll it
-    // back, and the light undo_move() keeps idBoard in sync, so a continued rollback
-    // (assignIds == false) can simply keep using them.
-    if (assignIds)
-    {
-        int whiteId = 0, blackId = 0;
-        std::fill(std::begin(idBoard), std::end(idBoard), 0);
-        for (Square sq = SQ_A0; sq <= SQ_I9; ++sq)
-            if (board[sq] != NO_PIECE)
-                idBoard[sq] = color_of(board[sq]) == WHITE ? whiteId++ : blackId++;
-    }
+    // cannot contain a capture, therefore these identities remain stable while we roll it back.
+    int whiteId = 0, blackId = 0;
+    std::fill(std::begin(idBoard), std::end(idBoard), 0);
+    for (Square sq = SQ_A0; sq <= SQ_I9; ++sq)
+        if (board[sq] != NO_PIECE)
+            idBoard[sq] = color_of(board[sq]) == WHITE ? whiteId++ : blackId++;
 
     for (int i = 0; i < d && st && st->previous; ++i)
     {
@@ -1480,54 +1467,46 @@ Value Position::detect_sky_cycle(int d, int ply) {
     if (d < 4 || !st)
         return VALUE_DRAW;
 
-    const Color      currentSide = sideToMove;
-    StateInfo* const start       = st;
+    const Color currentSide = sideToMove;
+    StateInfo* const start = st;
 
-    // Longest non-capturing history this classifier ever inspects. The exact cycle is
-    // bounded by rule_judge's `end` (rule60 + clamped checks) and the deep history by
-    // 128 plies, so this only guards against pathological inputs.
-    constexpr int MaxHistory = 512;
+    // Preserve an untouched rollback snapshot. The normal path classifies only the exact
+    // repetition cycle; only the ambiguous Sky branches pay for older history.
+    Position deepRollback;
+    std::memcpy((void*) &deepRollback, (const void*) this, offsetof(Position, filter));
+    std::memcpy((void*) deepRollback.idBoard, (const void*) idBoard, sizeof(idBoard));
 
-    // Gather the exact cycle first (pointer walk only, no chase computation yet).
-    StateInfo* q[MaxHistory];
-    int        qn = 0;
-    for (StateInfo* p = start; p && p->previous && qn < d && qn < MaxHistory; p = p->previous)
+    set_sky_info(d);
+
+    std::vector<StateInfo*> q;
+    q.reserve(d);
+    for (StateInfo* p = start; p && p->previous && int(q.size()) < d; p = p->previous)
     {
         if (p->capturedPiece != NO_PIECE)
             break;
-        q[qn++] = p;
+        q.push_back(p);
     }
-    if (qn < d)
+    if (int(q.size()) < d)
         return VALUE_DRAW;
 
-    // Piece types needed by the king exemption below. Taken from the current board
-    // before anything is rolled back: the cycle start equals the current position, and
-    // neither side's last move can have been captured inside a non-capturing cycle.
-    auto piece_type_after = [&](const StateInfo* sm) {
-        Move m = sm->move;
-        if (!m.is_ok())
-            return NO_PIECE_TYPE;
-        Piece pc = piece_on(m.to_sq());
-        return pc == NO_PIECE ? NO_PIECE_TYPE : type_of(pc);
-    };
-    const PieceType pt0 = piece_type_after(q[0]);
-    const PieceType pt1 = piece_type_after(q[1]);
-
-    // Roll back lazily. Most cycles are decided from the first four plies alone, and the
-    // deep-history branches simply continue the same rollback instead of re-doing it on
-    // a second Position copy.
-    int  rolled      = 0;
-    auto ensure_rolled = [&](int n) {
-        if (n > rolled)
+    std::vector<StateInfo*> deepQ;
+    auto ensure_deep_history = [&]() -> const std::vector<StateInfo*>& {
+        if (!deepQ.empty())
+            return deepQ;
+        const int historyDepth = std::min(start->pliesFromNull, 128);
+        deepRollback.set_sky_info(std::max(d, historyDepth));
+        deepQ.reserve(historyDepth);
+        for (StateInfo* p = start; p && p->previous && int(deepQ.size()) < historyDepth;
+             p = p->previous)
         {
-            set_sky_info(n - rolled, rolled == 0);
-            rolled = n;
+            if (p->capturedPiece != NO_PIECE)
+                break;
+            deepQ.push_back(p);
         }
+        return deepQ;
     };
 
-    ensure_rolled(4);
-
-    auto checked  = [](const StateInfo* s) { return bool(s->checkersBB); };
+    auto checked = [](const StateInfo* s) { return bool(s->checkersBB); };
     auto loss_for = [&](Color offender) {
         return offender == currentSide ? mated_in(ply) : mate_in(ply);
     };
@@ -1554,26 +1533,13 @@ Value Position::detect_sky_cycle(int d, int ply) {
     const bool mixedA = A && (checked(s0) != checked(s2));
     const bool mixedB = B && (checked(s1) != checked(s3));
     const bool differentA = mixedA
-                         && ((s2->skyChasers & u16(~s0->skyCheckers))
-                             || (s0->skyChasers & u16(~s2->skyCheckers)));
+      && ((s2->skyChasers & u16(~s0->skyCheckers))
+          || (s0->skyChasers & u16(~s2->skyCheckers)));
     const bool differentB = mixedB
-                         && ((s3->skyChasers & u16(~s1->skyCheckers))
-                             || (s1->skyChasers & u16(~s3->skyCheckers)));
-
-    // Early exit: once both four-ply intersections are empty, the full-cycle intersections
-    // below are empty as well, and the no-common-victim branch only needs s0..s3. The
-    // remaining plies of the cycle then never have to be rolled back.
-    if (!A && !B)
-    {
-        if (splitA && checkIdleB && pt0 != KING)
-            return loss_for(AColor);
-        if (splitB && checkIdleA && pt1 != KING)
-            return loss_for(BColor);
-        return VALUE_DRAW;
-    }
+      && ((s3->skyChasers & u16(~s1->skyCheckers))
+          || (s1->skyChasers & u16(~s3->skyCheckers)));
 
     // Intersect the victim sets for every move by the same side inside the exact cycle.
-    ensure_rolled(d);
     for (int i = 4; i < d; i += 2)
     {
         A &= q[i]->skyVictims;
@@ -1585,9 +1551,18 @@ Value Position::detect_sky_cycle(int d, int ply) {
     // chase against check/idle alternation; a king move is explicitly exempt.
     if (!A && !B)
     {
-        if (splitA && checkIdleB && pt0 != KING)
+        auto current_piece_type = [&](const StateInfo* sm) {
+            Move m = sm->move;
+            if (!m.is_ok())
+                return NO_PIECE_TYPE;
+            Square to = m.to_sq();
+            Piece pc = piece_on(to);
+            return pc == NO_PIECE ? NO_PIECE_TYPE : type_of(pc);
+        };
+
+        if (splitA && checkIdleB && current_piece_type(s0) != KING)
             return loss_for(AColor);
-        if (splitB && checkIdleA && pt1 != KING)
+        if (splitB && checkIdleA && current_piece_type(s1) != KING)
             return loss_for(BColor);
         return VALUE_DRAW;
     }
@@ -1605,25 +1580,6 @@ Value Position::detect_sky_cycle(int d, int ply) {
     if (!mixedA && mixedB && differentB)
         return loss_for(AColor);
 
-    // Deep history (only the ambiguous branches below pay for it). Continues the rollback
-    // already performed above, so identities stay consistent with s0..s3.
-    StateInfo* hist[MaxHistory];
-    int        histN     = 0;
-    bool       histReady = false;
-    auto ensure_deep_history = [&]() {
-        if (histReady)
-            return;
-        histReady = true;
-        const int historyDepth = std::min({start->pliesFromNull, 128, MaxHistory});
-        ensure_rolled(std::max(d, historyDepth));
-        for (StateInfo* p = start; p && p->previous && histN < historyDepth; p = p->previous)
-        {
-            if (p->capturedPiece != NO_PIECE)
-                break;
-            hist[histN++] = p;
-        }
-    };
-
     // Same-identity check/chase against a pure common-victim chase is phase-sensitive. The
     // target extends backward until that mixed sequence starts; if its oldest offensive turn
     // is a check, the mixed side closes the forbidden loop first, otherwise the pure side does.
@@ -1631,14 +1587,14 @@ Value Position::detect_sky_cycle(int d, int ply) {
     {
         const Color mixedColor = mixedA ? AColor : BColor;
         const Color pureColor  = mixedA ? BColor : AColor;
-        const int   parity     = mixedA ? 0 : 1;
-        const u16   common     = mixedA ? A : B;
+        const int parity       = mixedA ? 0 : 1;
+        const u16 common       = mixedA ? A : B;
 
-        ensure_deep_history();
-        int  count          = 0;
-        u16  identities     = 0;
+        const auto& hist = ensure_deep_history();
+        int count = 0;
+        u16 identities = 0;
         bool oldestWasCheck = false;
-        for (int i = parity; i < histN; i += 2)
+        for (int i = parity; i < int(hist.size()); i += 2)
         {
             StateInfo* x = hist[i];
             if (checked(x))
@@ -1667,18 +1623,20 @@ Value Position::detect_sky_cycle(int d, int ply) {
     // chaser identity on the non-checking half of the first two turns.
     if (mixedA && mixedB)
     {
-        const bool phaseB = (checked(s1) && s0->skyChasers) || (checked(s3) && s2->skyChasers);
+        const bool phaseB = (checked(s1) && s0->skyChasers)
+                         || (checked(s3) && s2->skyChasers);
         return phaseB ? loss_for(BColor) : loss_for(AColor);
     }
 
     // Ambiguous same-identity check/chase and pure-vs-pure folds are the only cases for which
     // the target extends beyond the first repetition cycle. Its deep path counts offensive
     // turns in six-turn blocks and only makes the multi-identity distinction after six turns.
+    // Reconstruct that narrow behavior without the v3 whole-history offenseCount heuristic.
     auto extended_multi = [&](Color side, u16 commonVictims) {
-        ensure_deep_history();
-        int count      = 0;
+        const auto& hist = ensure_deep_history();
+        int count = 0;
         u16 identities = 0;
-        for (int i = side == AColor ? 0 : 1; i < histN; i += 2)
+        for (int i = side == AColor ? 0 : 1; i < int(hist.size()); i += 2)
         {
             StateInfo* x = hist[i];
             if (checked(x))
@@ -1852,22 +1810,16 @@ bool Position::rule_judge(Value& result, int ply) {
     using RR = RuleConfig::RepetitionRule;
     using DR = RuleConfig::DrawRule;
 
-    // rule_judge runs at every search and qsearch node. Read the rule globals
-    // once into registers; the repetition loop below calls opaque functions
-    // (memcpy, detect_chases, ...) after which the compiler would otherwise
-    // have to reload them from memory on every iteration.
-    const RR  rr          = RuleConfig::repetitionRule;
-    const DR  dr          = RuleConfig::drawRule;
-    const int rule60Limit = RuleConfig::rule60Limit;
-
     auto apply_draw_rule = [&](bool repetition) {
         if (result != VALUE_DRAW)
             return;
 
         Color winner = COLOR_NB;
-        if (dr == DR::BLACK_WIN || (repetition && dr == DR::REP_BLACK_WIN))
+        if (RuleConfig::drawRule == DR::BLACK_WIN
+            || (repetition && RuleConfig::drawRule == DR::REP_BLACK_WIN))
             winner = BLACK;
-        else if (dr == DR::RED_WIN || (repetition && dr == DR::REP_RED_WIN))
+        else if (RuleConfig::drawRule == DR::RED_WIN
+                 || (repetition && RuleConfig::drawRule == DR::REP_RED_WIN))
             winner = WHITE;  // WHITE is Red in Pikafish's Xiangqi representation.
 
         if (winner != COLOR_NB)
@@ -1897,20 +1849,20 @@ bool Position::rule_judge(Value& result, int ply) {
                 ++cnt;
 
                 const bool computerReady =
-                  rr == RR::COMPUTER && (cnt == 2 || ply > i);
+                  RuleConfig::repetitionRule == RR::COMPUTER && (cnt == 2 || ply > i);
                 const bool legacyReady =
-                  rr != RR::COMPUTER && cnt >= 1;
+                  RuleConfig::repetitionRule != RR::COMPUTER && cnt >= 1;
 
                 if (computerReady || legacyReady)
                 {
-                    if (rr == RR::NO_JUDGEMENT)
+                    if (RuleConfig::repetitionRule == RR::NO_JUDGEMENT)
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
-                        // idBoard is not copied: detect_chases and set_sky_info renumber it.
                         Position rollback;
                         memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
-                        result = rr == RR::SKY
+                        memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
+                        result = RuleConfig::repetitionRule == RR::SKY
                                ? rollback.detect_sky_cycle(i, ply)
                                : rollback.detect_chases(i, ply);
                     }
@@ -1924,7 +1876,7 @@ bool Position::rule_judge(Value& result, int ply) {
 
                     // Legacy modes are 2-fold rules. ComputerRule preserves the stricter
                     // current Pikafish 3-fold/further-investigation behavior.
-                    if (rr != RR::COMPUTER)
+                    if (RuleConfig::repetitionRule != RR::COMPUTER)
                         return true;
 
                     // 3 folds and 2-fold draws (including DrawRule-transformed draws)
@@ -1935,7 +1887,8 @@ bool Position::rule_judge(Value& result, int ply) {
                     // Preserve the current ComputerRule false-mate safeguard.
                     if (filter[st->key] <= 1)
                     {
-                        if (st->rule60 < rule60Limit && st->previous->key == stp->previous->key)
+                        const int maxPly = std::max(1, RuleConfig::rule60MaxPly);
+                        if (st->rule60 < maxPly && st->previous->key == stp->previous->key)
                         {
                             StateInfo* prev = st->previous;
                             while ((prev = prev->previous) != stp)
@@ -1954,11 +1907,13 @@ bool Position::rule_judge(Value& result, int ply) {
         }
     }
 
-    // Configurable natural-move rule. rule60Limit is RULE60_UNLIMITED when the
-    // rule is off, so this is a single compare that never fires in that case.
-    if (st->rule60 >= rule60Limit)
+    // Configurable natural-move rule. The Repetition Rule callback keeps this
+    // switched on for AsianRule/SkyRule/YitianRule with rule120/rule120/
+    // rule150 respectively.
+    if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
+        && st->rule60 >= RuleConfig::rule60MaxPly)
     {
-        result = MoveList<ALL>(*this).size() ? VALUE_DRAW : mated_in(ply);
+        result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         apply_draw_rule(false);
         return true;
     }
@@ -2003,7 +1958,7 @@ bool Position::rule_judge(Value& result, int ply) {
         {
             if (level == MATE_DRAW)
             {
-                MoveList<ALL> moves(*this);
+                MoveList<LEGAL> moves(*this);
                 if (moves.size() == 0)
                 {
                     result = mated_in(ply);
@@ -2013,7 +1968,7 @@ bool Position::rule_judge(Value& result, int ply) {
                 {
                     StateInfo tempSt;
                     do_move(move, tempSt);
-                    bool mate = MoveList<ALL>(*this).size() == 0;
+                    bool mate = MoveList<LEGAL>(*this).size() == 0;
                     undo_move(move);
                     if (mate)
                         return false;
