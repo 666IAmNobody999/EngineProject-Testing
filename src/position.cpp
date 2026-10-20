@@ -60,6 +60,41 @@ bool           sixtyMoveRule   = true;
 int            rule60MaxPly    = 120;
 }  // namespace RuleConfig
 
+namespace {
+
+// StateInfo::skyChasers doubles as the "SkyRule info computed" marker. Kings and
+// pawns never chase, so a real chaser mask can never have all 16 bits set.
+constexpr u16 SKY_UNCOMPUTED = 0xFFFF;
+
+// Sky info is written into StateInfo objects that may be shared by several search
+// threads (the game history before the root). Every thread computes identical
+// values, so the only requirement is that the marker becomes visible last.
+inline bool sky_cached(const StateInfo* s) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(&s->skyChasers, __ATOMIC_ACQUIRE) != SKY_UNCOMPUTED;
+#else
+    return s->skyChasers != SKY_UNCOMPUTED;
+#endif
+}
+
+inline void sky_publish(StateInfo* s, u16 victims, u16 checkers, u16 chasers) {
+    s->skyVictims  = victims;
+    s->skyCheckers = checkers;
+#if defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(&s->skyChasers, chasers, __ATOMIC_RELEASE);
+#else
+    s->skyChasers = chasers;
+#endif
+}
+
+inline void sky_invalidate(StateInfo* s) {
+    s->skyVictims  = 0;
+    s->skyCheckers = 0;
+    s->skyChasers  = SKY_UNCOMPUTED;
+}
+
+}  // namespace
+
 namespace Zobrist {
 
 Key psq[PIECE_NB][SQUARE_NB];
@@ -269,6 +304,16 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     // handle also common incorrect FEN with fullmove = 0.
     gamePly = std::max(2 * (gamePly - 1), 0) + (sideToMove == BLACK);
 
+    // Persistent per-colour piece identities (0..15) used by the chase detectors.
+    // They follow the pieces in do_move()/undo_move(), so the SkyRule information
+    // attached to a StateInfo stays valid for as long as that state exists.
+    {
+        int whiteId = 0, blackId = 0;
+        for (Square s = SQ_A0; s <= SQ_I9; ++s)
+            if (board[s] != NO_PIECE)
+                idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
+    }
+
     set_state();
 
     if (checkers_to(sideToMove, king_square(~sideToMove)))
@@ -322,6 +367,8 @@ void Position::set_state() const {
     st->majorMaterial[WHITE] = st->majorMaterial[BLACK] = VALUE_ZERO;
     st->checkersBB = checkers_to(~sideToMove, king_square(sideToMove));
     st->move       = Move::none();
+    st->skyCapturedId = 0;
+    sky_invalidate(st);
 
     set_check_info();
 
@@ -578,6 +625,7 @@ void Position::do_move(Move                      m,
     newSt.previous = st;
     st             = &newSt;
     st->move       = m;
+    sky_invalidate(st);
 
     // Increment ply counters. Clamp to 10 checks for each side in rule 60
     // In particular, rule60 will be reset to zero later on in case of a capture.
@@ -706,6 +754,11 @@ void Position::do_move(Move                      m,
     // Set capture piece
     st->capturedPiece = captured;
 
+    // Keep the persistent piece identities in step with the board
+    st->skyCapturedId = idBoard[to];
+    idBoard[to]       = idBoard[from];
+    idBoard[from]     = 0;
+
     // Calculate checkers bitboard (if move gives check)
     st->checkersBB = givesCheck ? checkers_to(us, king_square(them)) : Bitboard(0);
     assert(givesCheck == bool(checkers_to(us, king_square(them))));
@@ -736,6 +789,10 @@ void Position::undo_move(Move m) {
 
     assert(empty(from));
     assert(type_of(st->capturedPiece) != KING);
+
+    // Put back the persistent piece identities (0 when nothing was captured)
+    idBoard[from] = idBoard[to];
+    idBoard[to]   = st->skyCapturedId;
 
     move_piece(to, from);  // Put the piece back at the source square
 
@@ -956,6 +1013,8 @@ void Position::do_null_move(StateInfo& newSt) {
     st->pliesFromNull = 0;
 
     st->capturedPiece = NO_PIECE;
+    st->skyCapturedId = 0;
+    sky_invalidate(st);
 
     sideToMove = ~sideToMove;
 
@@ -1223,19 +1282,27 @@ SkyChaseMap Position::sky_chased(Color c) {
             if (!chase_legal(m, checkUs))
                 continue;
 
-            bool trueChase             = true;
-            const auto [captured, id] = do_move(m);
-            Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
-            while (recaptures)
+            // Recapturers after the capture, computed on the current board with the
+            // post-capture occupancy: the victim never attacks its own square and the
+            // mover is filtered out by colour, so this equals attackers_to(to) after
+            // do_move(m). Only when somebody can recapture do we need the real
+            // post-capture position for chase_legal().
+            bool     trueChase  = true;
+            Bitboard recaptures = attackers_to(to, (pieces() ^ from) | to) & pieces(~sideToMove);
+            if (recaptures)
             {
-                Square sq = pop_lsb(recaptures);
-                if (chase_legal(Move(sq, to), checkThem))
+                const auto [captured, id] = do_move(m);
+                while (recaptures)
                 {
-                    trueChase = false;
-                    break;
+                    Square sq = pop_lsb(recaptures);
+                    if (chase_legal(Move(sq, to), checkThem))
+                    {
+                        trueChase = false;
+                        break;
+                    }
                 }
+                undo_move(m, captured, id);
             }
-            undo_move(m, captured, id);
 
             if (!trueChase)
                 continue;
@@ -1320,19 +1387,24 @@ ChaseMap Position::chased(Color c) {
 
             if (chase_legal(m, checkUs))
             {
-                bool trueChase             = true;
-                const auto& [captured, id] = do_move(m);
-                Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
-                while (recaptures)
+                // See sky_chased(): only enter the real post-capture position when
+                // the victim's side has at least one potential recapturer.
+                bool     trueChase  = true;
+                Bitboard recaptures = attackers_to(to, (pieces() ^ from) | to) & pieces(~sideToMove);
+                if (recaptures)
                 {
-                    Square s = pop_lsb(recaptures);
-                    if (chase_legal(Move(s, to), checkThem))
+                    const auto [captured, id] = do_move(m);
+                    while (recaptures)
                     {
-                        trueChase = false;
-                        break;
+                        Square s = pop_lsb(recaptures);
+                        if (chase_legal(Move(s, to), checkThem))
+                        {
+                            trueChase = false;
+                            break;
+                        }
                     }
+                    undo_move(m, captured, id);
                 }
-                undo_move(m, captured, id);
 
                 if (trueChase)
                 {
@@ -1402,18 +1474,14 @@ bool Position::has_mate_threat(Depth d) {
 
 
 // Fills the SkyRule state carried by each move while rolling the current line back.
-// This mirrors the supplied custom executable: check and chase are classified as mutually
-// exclusive move types; checking moves use victims=0xffff and keep checker identities,
-// while non-checking moves store the exact newly-created victim/chaser relation.
+// Check and chase are classified as mutually exclusive move types; checking moves use
+// victims=0xffff and keep checker identities, while non-checking moves store the exact
+// newly-created victim/chaser relation. The information depends only on the two
+// positions around the move and on the persistent piece identities, so a state that
+// has already been computed (by any thread) is skipped and only rolled back over.
+// This runs on a scratch copy of the position: the board is rolled back, the shared
+// StateInfo chain receives the results.
 void Position::set_sky_info(int d) {
-
-    // Reassign compact per-color identities in the current position. A repetition cycle
-    // cannot contain a capture, therefore these identities remain stable while we roll it back.
-    int whiteId = 0, blackId = 0;
-    std::fill(std::begin(idBoard), std::end(idBoard), 0);
-    for (Square sq = SQ_A0; sq <= SQ_I9; ++sq)
-        if (board[sq] != NO_PIECE)
-            idBoard[sq] = color_of(board[sq]) == WHITE ? whiteId++ : blackId++;
 
     for (int i = 0; i < d && st && st->previous; ++i)
     {
@@ -1421,39 +1489,36 @@ void Position::set_sky_info(int d) {
         if (cur->capturedPiece != NO_PIECE)
             break;
 
-        cur->skyVictims  = 0;
-        cur->skyCheckers = 0;
-        cur->skyChasers  = 0;
+        if (sky_cached(cur))
+        {
+            undo_move(cur->move, NO_PIECE, 0);
+            st = cur->previous;
+            continue;
+        }
 
         const Color mover = ~sideToMove;
 
         // In the target SkyRule, a checking move is not simultaneously counted as a chase.
         if (cur->checkersBB)
         {
-            cur->skyVictims = 0xFFFF;
-            Bitboard checks = cur->checkersBB;
+            u16      checkers = 0;
+            Bitboard checks   = cur->checkersBB;
             while (checks)
-            {
-                Square sq = pop_lsb(checks);
-                int id = idBoard[sq];
-                if (id >= 0 && id < 16)
-                    cur->skyCheckers |= u16(1u << id);
-            }
+                checkers |= u16(1u << idBoard[pop_lsb(checks)]);
 
-            undo_move(cur->move, cur->capturedPiece, 0);
+            undo_move(cur->move, NO_PIECE, 0);
             st = cur->previous;
+            sky_publish(cur, 0xFFFF, checkers, 0);
             continue;
         }
 
-        // Mate-threat ("kill") recursion is deliberately absent for SkyRule. The supplied
-        // executable short-circuits that detector when the independent Sky flag is enabled.
+        // Mate-threat ("kill") recursion is deliberately absent for SkyRule.
         SkyChaseMap after = sky_chased(mover);
-        undo_move(cur->move, cur->capturedPiece, 0);
+        undo_move(cur->move, NO_PIECE, 0);
         st = cur->previous;
         SkyChaseMap before = sky_chased(mover);
         SkyChaseMap exact  = after.exact_diff(before);
-        cur->skyVictims = exact.victims();
-        cur->skyChasers = exact.chasers();
+        sky_publish(cur, exact.victims(), 0, exact.chasers());
     }
 }
 
@@ -1480,21 +1545,40 @@ Value Position::detect_sky_cycle(int d, int ply) {
     if (d < 4 || !st)
         return VALUE_DRAW;
 
-    const Color      currentSide = sideToMove;
-    StateInfo* const start       = st;
+    const Color currentSide = sideToMove;
 
-    set_sky_info(d);
+    // Collect the cycle states (most recent first) without touching the heap in the
+    // common case, and find out whether any of them still needs its Sky info.
+    StateInfo*              local[256];
+    std::vector<StateInfo*> heap;
+    StateInfo**             q = local;
+    if (d > int(sizeof(local) / sizeof(local[0])))
+    {
+        heap.resize(d);
+        q = heap.data();
+    }
 
-    std::vector<StateInfo*> q;
-    q.reserve(d);
-    for (StateInfo* p = start; p && p->previous && int(q.size()) < d; p = p->previous)
+    int  n         = 0;
+    bool allCached = true;
+    for (StateInfo* p = st; p && p->previous && n < d; p = p->previous)
     {
         if (p->capturedPiece != NO_PIECE)
             break;
-        q.push_back(p);
+        q[n++] = p;
+        allCached &= sky_cached(p);
     }
-    if (int(q.size()) < d)
+    if (n < d)
         return VALUE_DRAW;
+
+    // Roll the cycle back on a scratch copy only for the states not yet computed.
+    // The board copy stops at the bloom filter; the StateInfo chain is shared.
+    if (!allCached)
+    {
+        Position scratch;
+        std::memcpy((void*) &scratch, (const void*) this, offsetof(Position, filter));
+        std::memcpy((void*) scratch.idBoard, (const void*) idBoard, sizeof(idBoard));
+        scratch.set_sky_info(d);
+    }
 
     auto checked  = [](const StateInfo* s) { return bool(s->checkersBB); };
     auto loss_for = [&](Color offender) {
@@ -1601,13 +1685,7 @@ Value Position::detect_chases(int d, int ply) {
         || RuleConfig::repetitionRule == RR::NO_JUDGEMENT)
         return VALUE_DRAW;
 
-    // Grant each piece on board a unique id for each side.
-    int whiteId = 0;
-    int blackId = 0;
-    for (Square s = SQ_A0; s <= SQ_I9; ++s)
-        if (board[s] != NO_PIECE)
-            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
-
+    // Piece identities are persistent (assigned in set(), moved by do_move()).
     Color us = sideToMove, them = ~us;
 
     // ComputerRule keeps the current strict detector.
@@ -1652,27 +1730,61 @@ Value Position::detect_chases(int d, int ply) {
     ChaseMap newChase[COLOR_NB];                  // ChaseMap (victim, attacker) per side
     newChase[us] = chased(us);
 
+    // Check/chase alternation (一将一捉 / 一捉一将) tracking. A side is "mixed" when its
+    // cycle contains at least one check and every non-checking move creates a new
+    // chase (exact after-minus-before diff, so a standing attack is not a chase).
+    bool anyChk[COLOR_NB]   = {false, false};
+    bool allChase[COLOR_NB] = {true, true};
+
+    // Newly created chases of the move that leads to the current state, rolled back
+    // over it. Used only where the legacy scoring below no longer needs the move.
+    auto new_chase_step_back = [&](Color mover) {
+        ChaseMap after = chased(mover);
+        undo_move(st->move, st->capturedPiece);
+        st = st->previous;
+        ChaseMap before = chased(mover);
+        (void) (after & before);  // after -= before
+        return u16(after);
+    };
+
     for (int i = 0; i < d; ++i)
     {
-        if (!chase[~sideToMove])
+        const Color mover = ~sideToMove;
+
+        if (st->checkersBB)
+            anyChk[mover] = true;
+
+        if (!chase[mover])
         {
-            if (!chase[sideToMove])
+            // Legacy scoring is settled for this side; the alternation test may still
+            // need to know whether this non-checking move is a chase.
+            if (!chase[sideToMove] && !allChase[WHITE] && !allChase[BLACK])
                 break;
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
+            if (!st->checkersBB && allChase[mover])
+                allChase[mover] = new_chase_step_back(mover) != 0;
+            else
+            {
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+            }
         }
         else if (st->checkersBB
                  || (chineseRule && RuleConfig::mateThreatDepth > 0 && has_mate_threat()))
         {
             // In Chinese-like rules, check/mate-threat is treated as chasing all pieces.
-            chase[~sideToMove] &= chineseLike ? 0xFFFF : 0;
-            rooks[~sideToMove] = 0;
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
+            chase[mover] &= chineseLike ? 0xFFFF : 0;
+            rooks[mover] = 0;
+            if (!st->checkersBB && allChase[mover])
+                allChase[mover] = new_chase_step_back(mover) != 0;
+            else
+            {
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+            }
         }
         else
         {
-            ChaseMap oldChase = chased(~sideToMove);
+            ChaseMap oldChase = chased(mover);
             u16      flag     = 0;
 
             // Asian-style special case: a rook pinned by a knight may itself be the chased piece.
@@ -1701,6 +1813,14 @@ Value Position::detect_chases(int d, int ply) {
             u16      chasesU16    = u16(chases);  // collapse to victim mask for accumulation
             newChase[sideToMove] = chased(sideToMove);
 
+            // Exact new chases of this move (after - before) for the alternation test.
+            if (allChase[sideToMove])
+            {
+                ChaseMap fresh = oldChase;
+                (void) (fresh & newChase[sideToMove]);
+                allChase[sideToMove] = u16(fresh) != 0;
+            }
+
             if (chineseLike)
             {
                 // Chinese-like rules recompute the diff against the updated newChase.
@@ -1715,6 +1835,15 @@ Value Position::detect_chases(int d, int ply) {
             chase[sideToMove] &= chineseLike && chasesU16 ? 0xFFFF : chasesU16;
         }
     }
+
+    // Check/chase alternation is forbidden: a mixed side loses against a non-mixed
+    // opponent (idle, chase or block-and-chase alike), both mixed is a draw.
+    const bool mixedUs   = anyChk[us] && allChase[us];
+    const bool mixedThem = anyChk[them] && allChase[them];
+    if (mixedUs != mixedThem)
+        return mixedThem ? mate_in(ply) : mated_in(ply);
+    if (mixedUs)
+        return VALUE_DRAW;
 
     if ((!chase[us] && !chase[them]) || (rooks[us] && rooks[them]))
         return VALUE_DRAW;
@@ -1783,64 +1912,16 @@ bool Position::rule_judge(Value& result, int ply) {
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
-                        // Check/chase alternation (一将一捉) is forbidden for the legacy
-                        // classifiers (Asian/Chinese/Yitian). A side whose cycle contains at
-                        // least one check and whose every other move is a chase is treated
-                        // like a perpetual checker: it loses against a non-mixed opponent,
-                        // and both mixed is a draw. Sky already handles this in
-                        // detect_sky_cycle(); Computer/AllowChase/NoJudgement are untouched.
-                        bool mixedJudged = false;
-                        if (RuleConfig::repetitionRule != RR::SKY
-                            && RuleConfig::repetitionRule != RR::COMPUTER
-                            && RuleConfig::repetitionRule != RR::ALLOW_CHASE)
-                        {
-                            Position scan;
-                            memcpy((void*) &scan, (const void*) this, offsetof(Position, filter));
-                            memcpy((void*) scan.idBoard, (const void*) idBoard, sizeof(idBoard));
-
-                            int whiteId = 0;
-                            int blackId = 0;
-                            for (Square s = SQ_A0; s <= SQ_I9; ++s)
-                                if (scan.board[s] != NO_PIECE)
-                                    scan.idBoard[s] =
-                                      color_of(scan.board[s]) == WHITE ? whiteId++ : blackId++;
-
-                            const Color us           = sideToMove;
-                            bool        anyChk[COLOR_NB]   = {false, false};
-                            bool        allChase[COLOR_NB] = {true, true};
-                            for (int k = 0; k < i; ++k)
-                            {
-                                const Color mover = ~scan.sideToMove;
-                                if (scan.st->checkersBB)
-                                    anyChk[mover] = true;
-                                else if (!u16(scan.chased(mover)))
-                                    allChase[mover] = false;
-                                scan.undo_move(scan.st->move, scan.st->capturedPiece);
-                                scan.st = scan.st->previous;
-                            }
-
-                            const bool mixedUs   = anyChk[us] && allChase[us];
-                            const bool mixedThem = anyChk[~us] && allChase[~us];
-                            if (mixedUs != mixedThem)
-                            {
-                                result      = mixedThem ? mate_in(ply) : mated_in(ply);
-                                mixedJudged = true;
-                            }
-                            else if (mixedUs && mixedThem)
-                            {
-                                result      = VALUE_DRAW;
-                                mixedJudged = true;
-                            }
-                        }
-
-                        if (!mixedJudged)
+                        if (RuleConfig::repetitionRule == RR::SKY)
+                            // Reads the shared StateInfo chain; only rolls back a
+                            // scratch copy when some Sky info is missing.
+                            result = detect_sky_cycle(i, ply);
+                        else
                         {
                             Position rollback;
                             memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
                             memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
-                            result = RuleConfig::repetitionRule == RR::SKY
-                                   ? rollback.detect_sky_cycle(i, ply)
-                                   : rollback.detect_chases(i, ply);
+                            result = rollback.detect_chases(i, ply);
                         }
                     }
                     else
