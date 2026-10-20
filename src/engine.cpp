@@ -199,7 +199,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "ScoreType",
-      Option("Elo var Elo var WinRate", "Elo", [](const Option& o) {
+      Option("WinRate var Elo var WinRate", "WinRate", [](const Option& o) {
           UCIEngine::scoreTypeMode = o == "WinRate" ? UCIEngine::ScoreTypeMode::WinRate
                                                     : UCIEngine::ScoreTypeMode::Elo;
           return std::nullopt;
