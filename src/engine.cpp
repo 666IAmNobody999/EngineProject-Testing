@@ -131,8 +131,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                    : o == "NoJudgement" ? RR::NO_JUDGEMENT
                                         : RR::ASIAN;
 
-                 // Couplings for AsianRule, SkyRule and YitianRule:
-                 // AsianRule/SkyRule use rule120 and YitianRule uses rule150
+                 // Couplings for AsianRule, SkyRule, ChineseRule and YitianRule:
+                 // AsianRule/SkyRule/ChineseRule use rule120 and YitianRule uses rule150
                  // (Rule60MaxPly stays freely adjustable 90-150), and the
                  // Sixty Move Rule is switched on for all three rules. The
                  // coupled options are assigned through the OptionsMap so that
@@ -140,6 +140,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                  // keep RuleConfig in sync.
                  if (RuleConfig::repetitionRule == RR::ASIAN
                      || RuleConfig::repetitionRule == RR::SKY
+					 || RuleConfig::repetitionRule == RR::CHINESE
                      || RuleConfig::repetitionRule == RR::YITIAN)
                  {
                      const char* rule60Ply =
@@ -158,7 +159,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
              }));
 
     options.add(  //
-      "Mate Threat Depth", Option(0, 0, 10, [](const Option& o) {
+      "Mate Threat Depth", Option(2, 0, 10, [](const Option& o) {
           RuleConfig::mateThreatDepth = int(o);
           return std::nullopt;
       }));

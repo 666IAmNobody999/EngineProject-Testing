@@ -55,7 +55,7 @@ namespace RuleConfig {
 // couplings).
 RepetitionRule repetitionRule  = RepetitionRule::SKY;
 DrawRule       drawRule        = DrawRule::NONE;
-int            mateThreatDepth = 0;
+int            mateThreatDepth = 2;
 bool           sixtyMoveRule   = true;
 int            rule60MaxPly    = 120;
 }  // namespace RuleConfig
@@ -1255,17 +1255,18 @@ SkyChaseMap Position::sky_chased(Color c) {
         PieceType attackerType = type_of(piece_on(from));
         Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
 
+        // 天天象棋棋规【一】4：受牵制的子捉其他子不算捉。吃掉牵制子本身不会暴露
+        // 帅（将），所以被牵子仍可捉牵制它的子（例如绊马腿的车捉该马）。
+        // 【一】2 / 【二】2：未过河卒不算，过河卒算；帅（将）不算被捉子。
         if (blockers_for_king(sideToMove) & from)
             attacks &= pinners(~sideToMove) & ~pieces(KING);
         else
             attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
                      | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
 
-        Bitboard candidates = 0;
-        if (attackerType == KNIGHT || attackerType == CANNON)
-            candidates = attacks & pieces(~sideToMove, ROOK);
-        if (RuleConfig::chinese_like() && (attackerType == ADVISOR || attackerType == BISHOP))
-            candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
+        // 天天象棋棋规【三】1：除车、兵外其他子捉车，无论车是否有根，算捉。
+        // （车捉车走同类子路径；帅兵不在 attackers 之内。）
+        Bitboard candidates = attackerType != ROOK ? attacks & pieces(~sideToMove, ROOK) : 0;
 
         attacks ^= candidates;
         while (candidates)
@@ -1335,8 +1336,10 @@ ChaseMap Position::chased(Color c) {
 
     ChaseMap chase;
 
-    if (st->move == Move::none())
-        return chase;
+    // No early return on the root state (st->move == none): the standing attacks of
+    // the root position are the "before" set of the first move of a cycle that
+    // includes the root. Returning an empty map there made every attack of that
+    // first move look newly created (24.3: a chase is what the move creates).
 
     // Checkers bitboard for both sides. checkUs is c's checker state, checkThem
     // is c's checking state. Passed to the shared chase_legal(m, b) so it only
@@ -1357,6 +1360,9 @@ ChaseMap Position::chased(Color c) {
         Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
 
         // Restrict to pinners if pinned, otherwise exclude attacks on unpromoted pawns and checks.
+        // 天天象棋棋规【一】4：受牵制的子捉其他子不算捉。吃掉牵制子本身不会暴露
+        // 帅（将），所以被牵子仍可捉牵制它的子（例如绊马腿的车捉该马）。
+        // 【一】2 / 【二】2：未过河卒不算，过河卒算；帅（将）不算被捉子。
         if (blockers_for_king(sideToMove) & from)
             attacks &= pinners(~sideToMove) & ~pieces(KING);
         else
@@ -1365,11 +1371,9 @@ ChaseMap Position::chased(Color c) {
 
         // Protected rooks chased by a knight/cannon count directly. ChineseRule and SkyRule
         // additionally treat advisor/bishop attacks on stronger pieces as a chase.
-        Bitboard candidates = 0;
-        if (attackerType == KNIGHT || attackerType == CANNON)
-            candidates = attacks & pieces(~sideToMove, ROOK);
-        if (RuleConfig::chinese_like() && (attackerType == ADVISOR || attackerType == BISHOP))
-            candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
+        // 天天象棋棋规【三】1：除车、兵外其他子捉车，无论车是否有根，算捉。
+        // （车捉车走同类子路径；帅兵不在 attackers 之内。）
+        Bitboard candidates = attackerType != ROOK ? attacks & pieces(~sideToMove, ROOK) : 0;
 
         attacks ^= candidates;
         while (candidates)
@@ -1725,6 +1729,79 @@ Value Position::detect_chases(int d, int ply) {
     const bool chineseLike = RuleConfig::chinese_like();
     const bool chineseRule = RuleConfig::repetitionRule == RR::CHINESE;
 
+    // ChineseRule: 中国象棋协会《象棋竞赛规则》2020 版第 25~26 条的裁决框架，
+    // 但"捉"统一采用天天象棋棋规（见 chased()）：
+    //   24.13  长将、长杀、长捉、一将一杀、一将一捉、一杀一捉为禁止着法；
+    //          一方只要有一着闲着即为允许着法。
+    //   25.1   单方长将任何情况须变着（rule_judge() 已先行裁定）。
+    //   25.2   双方允许 → 和。  25.3  一方禁止一方允许 → 禁止方变着。
+    //   25.4   双方均禁止 → 26.9。因为天天规则下成立的捉只有捉车、捉无根(假根)子，
+    //          26.9.1 列举的"重"禁着覆盖所有可能的禁着，双方对等 → 26.9.4 和。
+    //   26.1.2 走动帅应将而产生的捉、杀按闲处理。
+    //   天天【一】1：一子或多子连续分捉多子不算捉 —— 本方所有捉着必须有共同的被捉子
+    //          （victim id 交集非空），否则该方按闲处理。
+    if (chineseRule)
+    {
+        bool hasIdle[COLOR_NB] = {false, false};
+        u16  victims[COLOR_NB] = {0xFFFF, 0xFFFF};  // 本方捉着的共同被捉子
+
+        for (int i = 0; i < d; ++i)
+        {
+            StateInfo*  cur   = st;
+            const Color mover = ~sideToMove;
+
+            if (hasIdle[WHITE] && hasIdle[BLACK])
+                break;
+
+            auto step_back = [&]() {
+                undo_move(cur->move, cur->capturedPiece);
+                st = cur->previous;
+            };
+
+            // A check is a forbidden move by itself; a side already known to have
+            // played an idle move is an allowed side, nothing more to learn about it.
+            if (cur->checkersBB || hasIdle[mover])
+            {
+                step_back();
+                continue;
+            }
+
+            // 26.1.2: the king stepping out of check -> idle whatever it uncovers.
+            if (cur->previous->checkersBB && type_of(piece_on(cur->move.to_sq())) == KING)
+            {
+                hasIdle[mover] = true;
+                step_back();
+                continue;
+            }
+
+            ChaseMap   after = chased(mover);
+            const bool kill  = RuleConfig::mateThreatDepth > 0 && has_mate_threat();
+
+            step_back();
+
+            if (kill)
+                continue;  // 杀（含杀兼捉）: forbidden, nothing more to record
+
+            ChaseMap before = chased(mover);
+            ChaseMap fresh  = after;
+            (void) (fresh & before);  // fresh = after - before: newly created chases
+
+            u16 freshVictims = 0;
+            for (int v = 0; v < 16; ++v)
+                if (fresh.victims[v])
+                    freshVictims |= u16(1) << v;
+
+            victims[mover] &= freshVictims;
+            if (!victims[mover])
+                hasIdle[mover] = true;  // 闲着，或分捉多子（不算捉）
+        }
+
+        const bool forbUs = !hasIdle[us], forbThem = !hasIdle[them];
+        if (forbUs != forbThem)
+            return forbUs ? mated_in(ply) : mate_in(ply);  // 25.3
+        return VALUE_DRAW;                                 // 25.2 / 26.9.4
+    }
+
     u16      rooks[COLOR_NB] = {0xFFFF, 0xFFFF};
     u16      chase[COLOR_NB] = {0xFFFF, 0xFFFF};  // u16 victim-mask intersection accumulation
     ChaseMap newChase[COLOR_NB];                  // ChaseMap (victim, attacker) per side
@@ -1836,12 +1913,18 @@ Value Position::detect_chases(int d, int ply) {
         }
     }
 
-    // Check/chase alternation is forbidden: a mixed side loses against a non-mixed
-    // opponent (idle, chase or block-and-chase alike), both mixed is a draw.
+    // Check/chase alternation (一将一捉) is forbidden in Asian/Yitian: a mixed side
+    // loses against an allowed opponent (idle moves). Against a perpetual-chasing
+    // opponent both sides are forbidden and the game is drawn; both mixed is a draw.
+    // (SkyRule keeps "mixed side loses" in detect_sky_cycle().)
     const bool mixedUs   = anyChk[us] && allChase[us];
     const bool mixedThem = anyChk[them] && allChase[them];
     if (mixedUs != mixedThem)
+    {
+        if (mixedUs ? chase[them] : chase[us])
+            return VALUE_DRAW;  // 一将一捉 vs 长捉
         return mixedThem ? mate_in(ply) : mated_in(ply);
+    }
     if (mixedUs)
         return VALUE_DRAW;
 
@@ -1966,7 +2049,7 @@ bool Position::rule_judge(Value& result, int ply) {
     }
 
     // Configurable natural-move rule. The Repetition Rule callback keeps this
-    // switched on for AsianRule/SkyRule/YitianRule with rule120/rule120/
+    // switched on for AsianRule/SkyRule/ChineseRule/YitianRule with rule120/rule120/rule120
     // rule150 respectively.
     if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
         && st->rule60 >= RuleConfig::rule60MaxPly)
