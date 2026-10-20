@@ -1464,17 +1464,17 @@ void Position::set_sky_info(int d) {
 //
 // SkyRule priorities (a cycle that repeats is treated as perpetual, i.e. every
 // per-side move limit below is eventually exceeded):
-//   1. One side offends, the other does not: the offender changes.
-//   2. One side's offence contains checks (perpetual check, or check/chase
-//      alternation), the other side only chases: the checking side changes
-//      ("一方长将，一方长捉，长将方禁招"; 一将一捉 counts as the checking side).
-//   3. Both sides only chase: draw (one or more pieces chasing one piece share
-//      the same 6-move limit).
-//   4. Both sides alternate check/chase: one piece is limited to 12 moves, more
+//   1. Check/chase alternation (一将一捉 / 一捉一将) is forbidden in every case: a side
+//      whose cycle mixes checks with chasing moves changes, whatever the opponent
+//      does (idle, chase, or block-and-chase) and even if the chased pieces vary.
+//   2. Both sides alternate check/chase: one piece is limited to 12 moves, more
 //      than one piece to 18 moves; the side with the tighter limit changes,
 //      equal limits are a draw.
+//   3. One side keeps a common victim, the other does not: the chaser changes.
+//   4. Both sides only chase: draw (one or more pieces chasing one piece share
+//      the same 6-move limit).
 // Pure perpetual check on one or both sides is handled by rule_judge() before
-// this function is called.
+// this function is called ("一方长将，一方长捉，长将方禁招").
 Value Position::detect_sky_cycle(int d, int ply) {
 
     if (d < 4 || !st)
@@ -1518,9 +1518,11 @@ Value Position::detect_sky_cycle(int d, int ply) {
                          || (checked(s3) && s1->skyVictims == 0);
 
     // Per side over the whole cycle: common victims (a check counts as attacking
-    // everything), whether any move is a check, and the attacking identities.
+    // everything), whether any move is a check, whether every move is offensive
+    // (a check or a chase of anything), and the attacking identities.
     u16  common[2]     = {0xFFFF, 0xFFFF};
     bool anyCheck[2]   = {false, false};
+    bool allOffend[2]  = {true, true};
     u16  identities[2] = {0, 0};
     for (int i = 0; i < d; ++i)
     {
@@ -1533,10 +1535,30 @@ Value Position::detect_sky_cycle(int d, int ply) {
             identities[side] |= x->skyCheckers;
         }
         else
+        {
+            allOffend[side] = allOffend[side] && x->skyVictims;
             identities[side] |= x->skyChasers;
+        }
     }
     const u16 A = common[0];
     const u16 B = common[1];
+
+    // 1. Check/chase alternation is forbidden in every case.
+    const bool mixedA = anyCheck[0] && allOffend[0];
+    const bool mixedB = anyCheck[1] && allOffend[1];
+    if (mixedA != mixedB)
+        return loss_for(mixedA ? AColor : BColor);
+
+    // 2. Check/chase alternation on both sides: 1 piece -> 12 moves, more -> 18 moves.
+    if (mixedA)
+    {
+        auto multi = [](u16 ids) { return bool(ids & u16(ids - 1)); };
+        const bool multiA = multi(identities[0]);
+        const bool multiB = multi(identities[1]);
+        if (multiA != multiB)
+            return loss_for(multiA ? BColor : AColor);
+        return VALUE_DRAW;
+    }
 
     // No common victim on either side. The target has one Sky-only exception for a split
     // chase against check/idle alternation; a king move is explicitly exempt.
@@ -1557,27 +1579,13 @@ Value Position::detect_sky_cycle(int d, int ply) {
         return VALUE_DRAW;
     }
 
-    // 1. Exactly one side keeps a common victim throughout the cycle: that side changes.
+    // 3. Exactly one side keeps a common victim throughout the cycle: that side changes.
     if (A && !B)
         return loss_for(AColor);
     if (!A && B)
         return loss_for(BColor);
 
-    // 2. Check-containing offence against pure chase: the checking side changes.
-    if (anyCheck[0] != anyCheck[1])
-        return loss_for(anyCheck[0] ? AColor : BColor);
-
-    // 3. Pure chase against pure chase.
-    if (!anyCheck[0])
-        return VALUE_DRAW;
-
-    // 4. Check/chase alternation on both sides: 1 piece -> 12 moves, more -> 18 moves.
-    auto multi = [](u16 ids) { return bool(ids & u16(ids - 1)); };
-    const bool multiA = multi(identities[0]);
-    const bool multiB = multi(identities[1]);
-    if (multiA != multiB)
-        return loss_for(multiA ? BColor : AColor);
-
+    // 4. Pure chase against pure chase.
     return VALUE_DRAW;
 }
 

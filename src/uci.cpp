@@ -591,7 +591,7 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
         double l  = 1000.0 / (1.0 + std::exp(e2));
         double p  = (w + (1000.0 - w - l) / 2.0) / 1000.0;  // 0.0 ~ 1.0
 
-        int pct    = int(std::round(p * 100.0));
+        int pct = std::max(0, static_cast<int>(std::round(p * 100.0)));
 		
         // 大多数 GUI 在黑方走子时会把 cp 取负, 以便一律按红方视角显示。
         // 这里对黑方预先取负, GUI 再取负之后, 显示出来的仍然是走子方胜率
