@@ -53,11 +53,11 @@ namespace RuleConfig {
 // AsianRule/SkyRule couple to rule120 and YitianRule couples to rule150;
 // the Sixty Move Rule stays on for all three (enforced in engine.cpp
 // couplings).
-RepetitionRule repetitionRule  = RepetitionRule::YITIAN;
+RepetitionRule repetitionRule  = RepetitionRule::SkyRule;
 DrawRule       drawRule        = DrawRule::NONE;
-int            mateThreatDepth = 10;
+int            mateThreatDepth = 0;
 bool           sixtyMoveRule   = true;
-int            rule60MaxPly    = 150;
+int            rule60MaxPly    = 120;
 }  // namespace RuleConfig
 
 namespace Zobrist {
@@ -1783,12 +1783,65 @@ bool Position::rule_judge(Value& result, int ply) {
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
-                        Position rollback;
-                        memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
-                        memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
-                        result = RuleConfig::repetitionRule == RR::SKY
-                               ? rollback.detect_sky_cycle(i, ply)
-                               : rollback.detect_chases(i, ply);
+                        // Check/chase alternation (一将一捉) is forbidden for the legacy
+                        // classifiers (Asian/Chinese/Yitian). A side whose cycle contains at
+                        // least one check and whose every other move is a chase is treated
+                        // like a perpetual checker: it loses against a non-mixed opponent,
+                        // and both mixed is a draw. Sky already handles this in
+                        // detect_sky_cycle(); Computer/AllowChase/NoJudgement are untouched.
+                        bool mixedJudged = false;
+                        if (RuleConfig::repetitionRule != RR::SKY
+                            && RuleConfig::repetitionRule != RR::COMPUTER
+                            && RuleConfig::repetitionRule != RR::ALLOW_CHASE)
+                        {
+                            Position scan;
+                            memcpy((void*) &scan, (const void*) this, offsetof(Position, filter));
+                            memcpy((void*) scan.idBoard, (const void*) idBoard, sizeof(idBoard));
+
+                            int whiteId = 0;
+                            int blackId = 0;
+                            for (Square s = SQ_A0; s <= SQ_I9; ++s)
+                                if (scan.board[s] != NO_PIECE)
+                                    scan.idBoard[s] =
+                                      color_of(scan.board[s]) == WHITE ? whiteId++ : blackId++;
+
+                            const Color us           = sideToMove;
+                            bool        anyChk[COLOR_NB]   = {false, false};
+                            bool        allChase[COLOR_NB] = {true, true};
+                            for (int k = 0; k < i; ++k)
+                            {
+                                const Color mover = ~scan.sideToMove;
+                                if (scan.st->checkersBB)
+                                    anyChk[mover] = true;
+                                else if (!u16(scan.chased(mover)))
+                                    allChase[mover] = false;
+                                scan.undo_move(scan.st->move, scan.st->capturedPiece);
+                                scan.st = scan.st->previous;
+                            }
+
+                            const bool mixedUs   = anyChk[us] && allChase[us];
+                            const bool mixedThem = anyChk[~us] && allChase[~us];
+                            if (mixedUs != mixedThem)
+                            {
+                                result      = mixedThem ? mate_in(ply) : mated_in(ply);
+                                mixedJudged = true;
+                            }
+                            else if (mixedUs && mixedThem)
+                            {
+                                result      = VALUE_DRAW;
+                                mixedJudged = true;
+                            }
+                        }
+
+                        if (!mixedJudged)
+                        {
+                            Position rollback;
+                            memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
+                            memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
+                            result = RuleConfig::repetitionRule == RR::SKY
+                                   ? rollback.detect_sky_cycle(i, ply)
+                                   : rollback.detect_chases(i, ply);
+                        }
                     }
                     else
                         result = !checkUs ? mate_in(ply)
