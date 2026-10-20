@@ -1458,23 +1458,30 @@ void Position::set_sky_info(int d) {
 }
 
 
-// SkyRule repetition classifier lifted from the state machine shape of the supplied custom
-// executable. A and B are the two alternating movers in the repetition cycle. The primary
-// decision uses three per-move masks (victims/checkers/chasers), not independent 7/13/19
-// streak counters and not a whole-history offense score.
+// SkyRule repetition classifier. A and B are the two alternating movers in the
+// repetition cycle. The verdict depends only on the moves inside the cycle, so the
+// same cycle is always judged the same way regardless of how it was entered.
+//
+// SkyRule priorities (a cycle that repeats is treated as perpetual, i.e. every
+// per-side move limit below is eventually exceeded):
+//   1. One side offends, the other does not: the offender changes.
+//   2. One side's offence contains checks (perpetual check, or check/chase
+//      alternation), the other side only chases: the checking side changes
+//      ("一方长将，一方长捉，长将方禁招"; 一将一捉 counts as the checking side).
+//   3. Both sides only chase: draw (one or more pieces chasing one piece share
+//      the same 6-move limit).
+//   4. Both sides alternate check/chase: one piece is limited to 12 moves, more
+//      than one piece to 18 moves; the side with the tighter limit changes,
+//      equal limits are a draw.
+// Pure perpetual check on one or both sides is handled by rule_judge() before
+// this function is called.
 Value Position::detect_sky_cycle(int d, int ply) {
 
     if (d < 4 || !st)
         return VALUE_DRAW;
 
-    const Color currentSide = sideToMove;
-    StateInfo* const start = st;
-
-    // Preserve an untouched rollback snapshot. The normal path classifies only the exact
-    // repetition cycle; only the ambiguous Sky branches pay for older history.
-    Position deepRollback;
-    std::memcpy((void*) &deepRollback, (const void*) this, offsetof(Position, filter));
-    std::memcpy((void*) deepRollback.idBoard, (const void*) idBoard, sizeof(idBoard));
+    const Color      currentSide = sideToMove;
+    StateInfo* const start       = st;
 
     set_sky_info(d);
 
@@ -1489,24 +1496,7 @@ Value Position::detect_sky_cycle(int d, int ply) {
     if (int(q.size()) < d)
         return VALUE_DRAW;
 
-    std::vector<StateInfo*> deepQ;
-    auto ensure_deep_history = [&]() -> const std::vector<StateInfo*>& {
-        if (!deepQ.empty())
-            return deepQ;
-        const int historyDepth = std::min(start->pliesFromNull, 128);
-        deepRollback.set_sky_info(std::max(d, historyDepth));
-        deepQ.reserve(historyDepth);
-        for (StateInfo* p = start; p && p->previous && int(deepQ.size()) < historyDepth;
-             p = p->previous)
-        {
-            if (p->capturedPiece != NO_PIECE)
-                break;
-            deepQ.push_back(p);
-        }
-        return deepQ;
-    };
-
-    auto checked = [](const StateInfo* s) { return bool(s->checkersBB); };
+    auto checked  = [](const StateInfo* s) { return bool(s->checkersBB); };
     auto loss_for = [&](Color offender) {
         return offender == currentSide ? mated_in(ply) : mate_in(ply);
     };
@@ -1520,32 +1510,33 @@ Value Position::detect_sky_cycle(int d, int ply) {
     const StateInfo* s2 = q[2];
     const StateInfo* s3 = q[3];
 
-    u16 A = s0->skyVictims & s2->skyVictims;
-    u16 B = s1->skyVictims & s3->skyVictims;
-
-    const bool splitA = s0->skyVictims && s2->skyVictims && A == 0;
-    const bool splitB = s1->skyVictims && s3->skyVictims && B == 0;
+    const bool splitA     = s0->skyVictims && s2->skyVictims && !(s0->skyVictims & s2->skyVictims);
+    const bool splitB     = s1->skyVictims && s3->skyVictims && !(s1->skyVictims & s3->skyVictims);
     const bool checkIdleA = (checked(s0) && s2->skyVictims == 0)
                          || (checked(s2) && s0->skyVictims == 0);
     const bool checkIdleB = (checked(s1) && s3->skyVictims == 0)
                          || (checked(s3) && s1->skyVictims == 0);
 
-    const bool mixedA = A && (checked(s0) != checked(s2));
-    const bool mixedB = B && (checked(s1) != checked(s3));
-    const bool differentA = mixedA
-      && ((s2->skyChasers & u16(~s0->skyCheckers))
-          || (s0->skyChasers & u16(~s2->skyCheckers)));
-    const bool differentB = mixedB
-      && ((s3->skyChasers & u16(~s1->skyCheckers))
-          || (s1->skyChasers & u16(~s3->skyCheckers)));
-
-    // Intersect the victim sets for every move by the same side inside the exact cycle.
-    for (int i = 4; i < d; i += 2)
+    // Per side over the whole cycle: common victims (a check counts as attacking
+    // everything), whether any move is a check, and the attacking identities.
+    u16  common[2]     = {0xFFFF, 0xFFFF};
+    bool anyCheck[2]   = {false, false};
+    u16  identities[2] = {0, 0};
+    for (int i = 0; i < d; ++i)
     {
-        A &= q[i]->skyVictims;
-        if (i + 1 < d)
-            B &= q[i + 1]->skyVictims;
+        const StateInfo* x    = q[i];
+        const int        side = i & 1;  // 0 = A, 1 = B
+        common[side] &= x->skyVictims;
+        if (checked(x))
+        {
+            anyCheck[side] = true;
+            identities[side] |= x->skyCheckers;
+        }
+        else
+            identities[side] |= x->skyChasers;
     }
+    const u16 A = common[0];
+    const u16 B = common[1];
 
     // No common victim on either side. The target has one Sky-only exception for a split
     // chase against check/idle alternation; a king move is explicitly exempt.
@@ -1555,8 +1546,7 @@ Value Position::detect_sky_cycle(int d, int ply) {
             Move m = sm->move;
             if (!m.is_ok())
                 return NO_PIECE_TYPE;
-            Square to = m.to_sq();
-            Piece pc = piece_on(to);
+            Piece pc = piece_on(m.to_sq());
             return pc == NO_PIECE ? NO_PIECE_TYPE : type_of(pc);
         };
 
@@ -1567,98 +1557,24 @@ Value Position::detect_sky_cycle(int d, int ply) {
         return VALUE_DRAW;
     }
 
-    // Exactly one side keeps a common victim throughout the cycle: that side is the offender.
+    // 1. Exactly one side keeps a common victim throughout the cycle: that side changes.
     if (A && !B)
         return loss_for(AColor);
     if (!A && B)
         return loss_for(BColor);
 
-    // Both sides are offensive. A check/chase alternation performed by different identities
-    // is less restrictive than the opponent's pure/common-victim offense; the pure side changes.
-    if (mixedA && !mixedB && differentA)
-        return loss_for(BColor);
-    if (!mixedA && mixedB && differentB)
-        return loss_for(AColor);
+    // 2. Check-containing offence against pure chase: the checking side changes.
+    if (anyCheck[0] != anyCheck[1])
+        return loss_for(anyCheck[0] ? AColor : BColor);
 
-    // Same-identity check/chase against a pure common-victim chase is phase-sensitive. The
-    // target extends backward until that mixed sequence starts; if its oldest offensive turn
-    // is a check, the mixed side closes the forbidden loop first, otherwise the pure side does.
-    if (mixedA != mixedB)
-    {
-        const Color mixedColor = mixedA ? AColor : BColor;
-        const Color pureColor  = mixedA ? BColor : AColor;
-        const int parity       = mixedA ? 0 : 1;
-        const u16 common       = mixedA ? A : B;
+    // 3. Pure chase against pure chase.
+    if (!anyCheck[0])
+        return VALUE_DRAW;
 
-        const auto& hist = ensure_deep_history();
-        int count = 0;
-        u16 identities = 0;
-        bool oldestWasCheck = false;
-        for (int i = parity; i < int(hist.size()); i += 2)
-        {
-            StateInfo* x = hist[i];
-            if (checked(x))
-            {
-                identities |= x->skyCheckers;
-                oldestWasCheck = true;
-            }
-            else if (x->skyVictims & common)
-            {
-                identities |= x->skyChasers;
-                oldestWasCheck = false;
-            }
-            else
-                break;
-            ++count;
-        }
-
-        // This is the only place the target's six-turn identity threshold belongs. Once six
-        // offensive turns involve multiple identities, that side is the less restrictive one.
-        if (count >= 6 && (identities & u16(identities - 1)))
-            return loss_for(pureColor);
-        return loss_for(oldestWasCheck ? mixedColor : pureColor);
-    }
-
-    // When both sides alternate check/chase, the custom binary resolves the phase using the
-    // chaser identity on the non-checking half of the first two turns.
-    if (mixedA && mixedB)
-    {
-        const bool phaseB = (checked(s1) && s0->skyChasers)
-                         || (checked(s3) && s2->skyChasers);
-        return phaseB ? loss_for(BColor) : loss_for(AColor);
-    }
-
-    // Ambiguous same-identity check/chase and pure-vs-pure folds are the only cases for which
-    // the target extends beyond the first repetition cycle. Its deep path counts offensive
-    // turns in six-turn blocks and only makes the multi-identity distinction after six turns.
-    // Reconstruct that narrow behavior without the v3 whole-history offenseCount heuristic.
-    auto extended_multi = [&](Color side, u16 commonVictims) {
-        const auto& hist = ensure_deep_history();
-        int count = 0;
-        u16 identities = 0;
-        for (int i = side == AColor ? 0 : 1; i < int(hist.size()); i += 2)
-        {
-            StateInfo* x = hist[i];
-            if (checked(x))
-                identities |= x->skyCheckers;
-            else
-            {
-                if (!(x->skyVictims & commonVictims))
-                    break;
-                identities |= x->skyChasers;
-            }
-            ++count;
-            if (count >= 6 && (identities & u16(identities - 1)))
-                return true;
-        }
-        return false;
-    };
-
-    // The current cycle itself is normally shorter than the target's six-turn expansion.
-    // If one side is already demonstrably multi-identity at that threshold, it is the less
-    // restrictive side and the other side must change. Otherwise equivalent folds are drawn.
-    const bool multiA = extended_multi(AColor, A);
-    const bool multiB = extended_multi(BColor, B);
+    // 4. Check/chase alternation on both sides: 1 piece -> 12 moves, more -> 18 moves.
+    auto multi = [](u16 ids) { return bool(ids & u16(ids - 1)); };
+    const bool multiA = multi(identities[0]);
+    const bool multiB = multi(identities[1]);
     if (multiA != multiB)
         return loss_for(multiA ? BColor : AColor);
 

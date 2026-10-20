@@ -40,7 +40,7 @@ constexpr auto StartFEN = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNB
 class UCIEngine {
    public:
     // Display normalization mode for cp scores, selected by the "ScoreType" UCI option.
-    enum class ScoreTypeMode { Elo, PAWN_VALUE_NORMALIZED, RAW };
+    enum class ScoreTypeMode { Elo, WinRate };
 
     UCIEngine(CommandLine cli);
 
