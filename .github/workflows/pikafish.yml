@@ -65,7 +65,7 @@ jobs:
 
   Pikafish-MacOS:
     name: MacOS-universal
-    runs-on: macos-latest
+    runs-on: macos-14
     env:
       COMP: clang
       EXE: Pikafish-MacOS-universal
@@ -138,7 +138,7 @@ jobs:
   Pikafish:
     name: Pikafish
     runs-on: ubuntu-slim
-    needs: [Pikafish-x86-64, Pikafish-MacOS, Pikafish-Android]
+    needs: [Pikafish-x86-64, Pikafish-Android]
 
     steps:
       - uses: actions/checkout@v7

@@ -58,6 +58,18 @@ DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 2;
 bool           sixtyMoveRule   = true;
 int            rule60MaxPly    = 120;
+int            rule60Limit     = 120;
+int            rule60KeyCap    = 120;
+int            rule60EvalDiv   = 244;
+
+void refresh_rule60() {
+    const int maxPly = std::max(1, rule60MaxPly);
+    rule60Limit      = sixtyMoveRule ? maxPly : RULE60_UNLIMITED;
+    // With the rule off keep the upstream rule-120 shape for the TT buckets and the
+    // evaluation damping instead of letting the counter run away.
+    rule60KeyCap  = sixtyMoveRule ? maxPly : 120;
+    rule60EvalDiv = 2 * rule60KeyCap + 4;
+}
 }  // namespace RuleConfig
 
 namespace {
@@ -294,7 +306,9 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
 
-    if (st->rule60 < 0 || st->rule60 > RuleConfig::rule60MaxPly - 1)
+    // With the Sixty Move Rule off any counter is acceptable (the game simply goes
+    // on); with it on, a position at or beyond the limit is already over.
+    if (st->rule60 < 0 || st->rule60 >= RuleConfig::rule60Limit)
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
 
     if (gamePly < 0 || gamePly > 100000)
@@ -2028,8 +2042,8 @@ bool Position::rule_judge(Value& result, int ply) {
                     // Preserve the current ComputerRule false-mate safeguard.
                     if (filter[st->key] <= 1)
                     {
-                        const int maxPly = std::max(1, RuleConfig::rule60MaxPly);
-                        if (st->rule60 < maxPly && st->previous->key == stp->previous->key)
+                        if (st->rule60 < RuleConfig::rule60Limit
+                            && st->previous->key == stp->previous->key)
                         {
                             StateInfo* prev = st->previous;
                             while ((prev = prev->previous) != stp)
@@ -2048,11 +2062,9 @@ bool Position::rule_judge(Value& result, int ply) {
         }
     }
 
-    // Configurable natural-move rule. The Repetition Rule callback keeps this
-    // switched on for AsianRule/SkyRule/ChineseRule/YitianRule with rule120/rule120/rule120
-    // rule150 respectively.
-    if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
-        && st->rule60 >= RuleConfig::rule60MaxPly)
+    // Configurable natural-move rule (rule60Limit is RULE60_UNLIMITED when the
+    // Sixty Move Rule is switched off, so this is a single compare per node).
+    if (st->rule60 >= RuleConfig::rule60Limit)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         apply_draw_rule(false);

@@ -185,6 +185,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           // AsianRule/SkyRule/YitianRule always switches it back on via the
           // Repetition Rule coupling.
           RuleConfig::sixtyMoveRule = int(o) != 0;
+          RuleConfig::refresh_rule60();
           return std::nullopt;
       }));
 
@@ -193,6 +194,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           // Defaults to rule120 for AsianRule/SkyRule and rule150 for
           // YitianRule; freely adjustable between 90 and 150 plies.
           RuleConfig::rule60MaxPly = int(o);
+          RuleConfig::refresh_rule60();
           return std::nullopt;
       }));
 
@@ -237,6 +239,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     RuleConfig::mateThreatDepth    = int(options["Mate Threat Depth"]);
     RuleConfig::sixtyMoveRule      = int(options["Sixty Move Rule"]) != 0;
     RuleConfig::rule60MaxPly       = int(options["Rule60MaxPly"]);
+    RuleConfig::refresh_rule60();
 
     force_process_priority();
 

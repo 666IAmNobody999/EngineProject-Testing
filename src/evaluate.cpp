@@ -78,8 +78,11 @@ Value scale_evaluation(Value nnue, int optimism, const Position& pos) {
                  + BishopValue * pos.count<BISHOP>() + pos.major_material();
     int v        = base_eval * i64(80030 + material) / 80030;
 
-    // Damp down the evaluation linearly when shuffling
-    v -= v * pos.rule60_count() / 244;
+    // Damp down the evaluation linearly when shuffling. The divisor follows the
+    // configured limit (2 * limit + 4, i.e. the upstream 244 for rule 120) and the
+    // counter is clamped so that a disabled Sixty Move Rule saturates at ~50%
+    // instead of running past 100% and flipping the sign.
+    v -= v * std::min(pos.rule60_count(), RuleConfig::rule60KeyCap) / RuleConfig::rule60EvalDiv;
 
     // Guarantee that the evaluation does not hit the mate range
     v = std::clamp(v, VALUE_MATED_IN_MAX_PLY + 1, VALUE_MATE_IN_MAX_PLY - 1);

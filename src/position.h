@@ -20,6 +20,7 @@
 #define POSITION_H_INCLUDED
 
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <deque>
@@ -64,6 +65,24 @@ extern DrawRule       drawRule;
 extern int            mateThreatDepth;
 extern bool           sixtyMoveRule;
 extern int            rule60MaxPly;
+
+// Derived rule-60 constants, refreshed by refresh_rule60() whenever one of the two
+// options above changes. Every hot path reads exactly one of these instead of
+// re-deriving "is the rule on, and what is the limit" node by node.
+//   rule60Limit  : ply count at which the natural-move draw is claimed. When the
+//                  rule is switched off it is RULE60_UNLIMITED, so "count >= limit",
+//                  "count < limit - 4" and "limit - count" keep working unchanged.
+//   rule60KeyCap : the rule60 counter is clamped to this value before it is mixed
+//                  into the TT key and before the evaluation damping. With the rule
+//                  on the counter can never reach it (no-op); with the rule off it
+//                  stops the TT from being split into ever more buckets and keeps
+//                  the damping from running past 100% and flipping the sign.
+//   rule60EvalDiv: evaluation damping divisor, 2 * rule60KeyCap + 4 (244 for 120).
+constexpr int RULE60_UNLIMITED = 1 << 14;
+extern int    rule60Limit;
+extern int    rule60KeyCap;
+extern int    rule60EvalDiv;
+void          refresh_rule60();
 
 inline bool chinese_like() {
     return repetitionRule == RepetitionRule::CHINESE || repetitionRule == RepetitionRule::SKY;
@@ -381,7 +400,10 @@ inline Key Position::key() const { return adjust_key60(st->key); }
 
 template<bool AfterMove>
 inline Key Position::adjust_key60(Key k) const {
-    return (st->rule60 < (14 - AfterMove) ? k : k ^ make_key((st->rule60 - (14 - AfterMove)) / 8))
+    // The clamp only ever triggers with the Sixty Move Rule switched off (the
+    // counter cannot reach rule60KeyCap otherwise), see RuleConfig::rule60KeyCap.
+    const int r = std::min(st->rule60, RuleConfig::rule60KeyCap);
+    return (r < (14 - AfterMove) ? k : k ^ make_key((r - (14 - AfterMove)) / 8))
          ^ (filter[k] ? make_key(14) : 0);
 }
 
