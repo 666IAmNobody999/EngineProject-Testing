@@ -53,7 +53,7 @@ namespace RuleConfig {
 // AsianRule/SkyRule couple to rule120 and YitianRule couples to rule150;
 // the Sixty Move Rule stays on for all three (enforced in engine.cpp
 // couplings).
-RepetitionRule repetitionRule  = RepetitionRule::SkyRule;
+RepetitionRule repetitionRule  = RepetitionRule::SKY;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 0;
 bool           sixtyMoveRule   = true;
