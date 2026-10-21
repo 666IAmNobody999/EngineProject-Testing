@@ -226,8 +226,12 @@ void Search::Worker::start_searching() {
                                               - limits.inc[rootPos.side_to_move()]);
 
     Worker* bestThread = this;
+    Skill   skill =
+      Skill(options["Skill Level"], options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0);
 
-    if (!limits.depth)
+    // With a strength handicap the main thread has already swapped its chosen
+    // sub-optimal move into rootMoves[0]; thread voting would undo that.
+    if (!limits.depth && !skill.enabled())
         bestThread = threads.get_best_thread()->worker.get();
 
     main_manager()->bestPreviousScore        = bestThread->rootMoves[0].score;
@@ -296,6 +300,12 @@ bool Search::Worker::iterative_deepening() {
     }
 
     usize multiPV = usize(options["MultiPV"]);
+    Skill skill(options["Skill Level"], options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0);
+
+    // When playing with strength handicap enable MultiPV search that we will
+    // use behind-the-scenes to retrieve a set of possible moves.
+    if (skill.enabled())
+        multiPV = std::max(multiPV, usize(4));
 
     multiPV = std::min(multiPV, rootMoves.size());
 
@@ -533,6 +543,10 @@ bool Search::Worker::iterative_deepening() {
         if (!mainThread)
             continue;
 
+        // If the skill level is enabled and time is up, pick a sub-optimal best move
+        if (skill.enabled() && skill.time_to_pick(rootDepth))
+            skill.pick_best(rootMoves, multiPV);
+
         // Use part of the gained time from a previous stable move for the current move
         for (auto&& th : threads)
         {
@@ -596,7 +610,60 @@ bool Search::Worker::iterative_deepening() {
 
     mainThread->previousTimeReduction = timeReduction;
 
+    // If the skill level is enabled, swap the best PV line with the sub-optimal one
+    if (skill.enabled())
+    {
+        Move chosen = skill.best ? skill.best : skill.pick_best(rootMoves, multiPV);
+        auto it     = std::find(rootMoves.begin(), rootMoves.end(), chosen);
+        if (it != rootMoves.end() && it != rootMoves.begin())
+        {
+            std::swap(rootMoves[0], *it);
+            uciPvSent = false;  // the reported PV must match the played move
+        }
+    }
+
     return uciPvSent;
+}
+
+
+// When playing with strength handicap, choose the best move among a set of
+// RootMoves using a statistical rule dependent on 'level'. Idea by Heinz van Saanen.
+Move Search::Skill::pick_best(const RootMoves& rootMoves, usize multiPV) {
+    static PRNG rng(u64(now()) | 1);  // PRNG sequence should be non-deterministic
+
+    // RootMoves are already sorted by score in descending order
+    usize valid = 1;
+    while (valid < multiPV && rootMoves[valid].score != -VALUE_INFINITE)
+        ++valid;
+
+    Value  topScore = rootMoves[0].score;
+    int    delta    = std::min(topScore - rootMoves[valid - 1].score, int(PawnValue));
+    int    maxScore = -VALUE_INFINITE;
+    double weakness = 120 - 2 * level;
+
+    // Choose best move. For each move score we add two terms, both dependent on
+    // weakness. One is deterministic and bigger for weaker levels, and one is
+    // random. Then we choose the move with the resulting highest score.
+    for (usize i = 0; i < multiPV; ++i)
+    {
+        // Never pick a line that was not searched in this iteration
+        // (e.g. a search stopped before the MultiPV loop finished).
+        if (i > 0 && rootMoves[i].score == -VALUE_INFINITE)
+            break;
+
+        // This is our magic formula
+        int push = int((weakness * int(topScore - rootMoves[i].score)
+                        + delta * (rng.rand<unsigned>() % int(weakness)))
+                       / 128);
+
+        if (rootMoves[i].score + push >= maxScore)
+        {
+            maxScore = rootMoves[i].score + push;
+            best     = rootMoves[i].pv[0];
+        }
+    }
+
+    return best;
 }
 
 

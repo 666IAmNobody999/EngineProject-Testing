@@ -106,7 +106,7 @@ jobs:
 
   Pikafish-MacOS:
     name: MacOS-universal
-    runs-on: macos-15
+    runs-on: macos-14
     env:
       COMP: clang
       EXE: Pikafish-MacOS-universal

@@ -116,6 +116,13 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add(  //
       "MultiPV", Option(1, 1, MAX_MOVES));
 
+    options.add("Skill Level", Option(20, 0, 20));
+
+    options.add("UCI_LimitStrength", Option(false));
+
+    options.add("UCI_Elo",
+                Option(Search::Skill::LowestElo, Search::Skill::LowestElo, Search::Skill::HighestElo));
+
     options.add(  //
       "Repetition Rule",
       Option("SkyRule var SkyRule var AsianRule var YitianRule var ChineseRule var ComputerRule",

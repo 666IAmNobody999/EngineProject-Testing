@@ -166,6 +166,34 @@ struct RootMove {
 using RootMoves = std::vector<RootMove>;
 
 
+// Skill structure is used to implement strength limit. If we have a UCI_Elo,
+// we convert it to an appropriate skill level. The polynomial mapping comes from
+// Stockfish (anchored there to CCRL 40/4); here it is rescaled to the
+// [LowestElo, HighestElo] range of this engine and is a relative strength scale,
+// not a calibrated Xiangqi rating.
+struct Skill {
+    // Lowest and highest Elo ratings used in the skill level calculation
+    constexpr static int LowestElo  = 1280;
+    constexpr static int HighestElo = 3133;
+
+    Skill(int skill_level, int uci_elo) {
+        if (uci_elo)
+        {
+            double e = double(uci_elo - LowestElo) / (HighestElo - LowestElo);
+            level = std::clamp((((37.2473 * e - 40.8525) * e + 22.2943) * e - 0.311438), 0.0, 19.0);
+        }
+        else
+            level = double(skill_level);
+    }
+    bool enabled() const { return level < 20.0; }
+    bool time_to_pick(Depth depth) const { return depth == 1 + int(level); }
+    Move pick_best(const RootMoves&, usize multiPV);
+
+    double level;
+    Move   best = Move::none();
+};
+
+
 // LimitsType struct stores information sent by the caller about the analysis required.
 struct LimitsType {
 
