@@ -94,11 +94,26 @@ struct CpuFeatures {
 };
 
 
+// Reads one CPUID feature bit. Used for features whose __builtin_cpu_supports()
+// name is too new for some toolchains: Apple Clang 15 (Xcode 15.x, the default
+// on the GitHub macos-14 runner) rejects "vaes" and "avxvnni" at compile time
+// with "invalid cpu feature string for builtin".
+//   reg: 0 = EAX, 1 = EBX, 2 = ECX, 3 = EDX
+static bool cpuid_bit(unsigned leaf, unsigned subleaf, int reg, int bit) {
+    unsigned r[4] = {0, 0, 0, 0};
+    if (!__get_cpuid_count(leaf, subleaf, &r[0], &r[1], &r[2], &r[3]))
+        return false;
+    return (r[reg] >> bit) & 1u;
+}
+
 static CpuFeatures query_cpu_features() {
+    // AVX2 from the builtin already implies that the OS saves YMM state
+    // (OSXSAVE + XCR0), which VAES and AVX-VNNI also require.
+    const bool avx2 = (bool) __builtin_cpu_supports("avx2");
     return {
       .sse41           = (bool) __builtin_cpu_supports("sse4.1"),
       .popcnt          = (bool) __builtin_cpu_supports("popcnt"),
-      .avx2            = (bool) __builtin_cpu_supports("avx2"),
+      .avx2            = avx2,
       .bmi2            = (bool) __builtin_cpu_supports("bmi2"),
       .avx512f         = (bool) __builtin_cpu_supports("avx512f"),
       .avx512vl        = (bool) __builtin_cpu_supports("avx512vl"),
@@ -111,8 +126,8 @@ static CpuFeatures query_cpu_features() {
       .avx512bitalg    = (bool) __builtin_cpu_supports("avx512bitalg"),
       .vpclmulqdq      = (bool) __builtin_cpu_supports("vpclmulqdq"),
       .gfni            = (bool) __builtin_cpu_supports("gfni"),
-      .vaes            = (bool) __builtin_cpu_supports("vaes"),
-      .avxvnni         = (bool) __builtin_cpu_supports("avxvnni"),
+      .vaes            = avx2 && cpuid_bit(7, 0, 2, 9),  // CPUID.(7,0):ECX[9]
+      .avxvnni         = avx2 && cpuid_bit(7, 1, 0, 4),  // CPUID.(7,1):EAX[4]
     };
 }
 
