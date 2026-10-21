@@ -15,6 +15,11 @@ jobs:
       ARCH: x86-64-universal
       COMP: clang
       EXE: Pikafish-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
+      # Private network used only for the PGO training run (never shipped; this
+      # fork does not embed the net in the binary).
+      NET_REPO: ${{ vars.NET_REPO }}
+      NET_TAG: ${{ vars.NET_TAG }}
+      NET_SHA256: ${{ vars.NET_SHA256 }}
     strategy:
       matrix:
         config:
@@ -33,39 +38,75 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Download private network for PGO
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.NET_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ] || [ -z "$NET_REPO" ] || [ -z "$NET_TAG" ]; then
+            echo "::error::NET_TOKEN secret, NET_REPO and NET_TAG variables are required for the PGO build."
+            exit 1
+          fi
+          gh release download "$NET_TAG" --repo "$NET_REPO" --pattern pikafish.nnue --dir . --clobber
+          if [ -n "$NET_SHA256" ]; then
+            echo "$NET_SHA256  pikafish.nnue" | sha256sum -c -
+          fi
+          ls -l pikafish.nnue
+
       - name: Setup msys and install required packages
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
-          install: mingw-w64-clang-x86_64-clang make git
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-llvm-tools
+            mingw-w64-clang-x86_64-compiler-rt
+            make git
 
       - name: Set up LLVM
         if: runner.os == 'Linux'
         run: |
           LLVM_VERSION=22
           curl -s https://apt.llvm.org/llvm.sh | sudo bash -s -- $LLVM_VERSION
-          sudo apt install -y libc++-$LLVM_VERSION-dev libc++abi-$LLVM_VERSION-dev libunwind-$LLVM_VERSION-dev
-          echo "EXTRACXXFLAGS=-stdlib=libc++" >> $GITHUB_ENV
-          echo "EXTRALDFLAGS=-stdlib=libc++" >> $GITHUB_ENV
+          sudo apt install -y libc++-$LLVM_VERSION-dev libc++abi-$LLVM_VERSION-dev libunwind-$LLVM_VERSION-dev \
+                              libclang-rt-$LLVM_VERSION-dev llvm-$LLVM_VERSION
+          # CXXFLAGS/LDFLAGS (not EXTRA*) so that the PGO sub-makes keep libc++
+          echo "CXXFLAGS=-stdlib=libc++" >> $GITHUB_ENV
+          echo "LDFLAGS=-stdlib=libc++" >> $GITHUB_ENV
           echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> $GITHUB_PATH
 
-      - name: Compile universal build
+      # GitHub-hosted x86 runners lack AVX-VNNI / AVX-512, so every slice's PGO
+      # bench runs under Intel SDE.
+      - name: Setup Intel SDE
+        uses: petarpetrovt/setup-sde@v6.0
+
+      - name: Compile universal PGO build
         run: |
-          make -j4 build EXE=$EXE
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            SDE="$(cygpath -u "$SDE_PATH")/sde.exe"
+          else
+            SDE="$SDE_PATH/sde64"
+          fi
+          make -j4 profile-build EXE=$EXE RUN_PREFIX="$SDE -future --"
           make strip EXE=$EXE
           cp $EXE ../
+
+      - name: Remove private network
+        if: always()
+        shell: bash
+        run: rm -rf pikafish.nnue temp_builds
 
       # Artifacts automatically get zipped.
       # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v7
-        with:	
+        with:
           name: ${{ env.EXE }}
           path: ${{ env.EXE }}
 
   Pikafish-MacOS:
     name: MacOS-universal
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       COMP: clang
       EXE: Pikafish-MacOS-universal
@@ -131,7 +172,7 @@ jobs:
       # Artifacts automatically get zipped.
       # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v7
-        with:	
+        with:
           name: ${{ env.EXE }}
           path: ${{ env.EXE }}
 
