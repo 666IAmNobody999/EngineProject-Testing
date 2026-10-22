@@ -414,11 +414,14 @@ inline Key Position::key() const { return adjust_key60(st->key); }
 
 template<bool AfterMove>
 inline Key Position::adjust_key60(Key k) const {
-    // The clamp only ever triggers with the Sixty Move Rule switched off (the
-    // counter cannot reach rule60KeyCap otherwise), see RuleConfig::rule60KeyCap.
+    constexpr int R60KeyStart = 14;  // 起點：計數到呢個值先開始分桶
+    constexpr int R60KeyWidth = 8;   // 桶寬：每隔幾多 ply 換一個 key 鹽
+
     const int r = std::min(st->rule60, RuleConfig::rule60KeyCap);
-    return (r < (14 - AfterMove) ? k : k ^ make_key((r - (14 - AfterMove)) / 8))
-         ^ (filter[k] ? make_key(14) : 0);
+    return (r < (R60KeyStart - AfterMove)
+              ? k
+              : k ^ make_key((r - (R60KeyStart - AfterMove)) / R60KeyWidth))
+         ^ (filter[k] ? make_key(1000) : 0);
 }
 
 inline Key Position::pawn_key() const { return st->pawnKey; }
