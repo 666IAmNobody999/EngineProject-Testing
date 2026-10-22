@@ -598,6 +598,9 @@ void move_to_front(std::vector<T>& vec, Predicate pred) {
 void set_console_utf8();
 
 std::stringstream read_compressed_nnue(const std::filesystem::path& fpath);
+// Same as read_compressed_nnue(), but decompresses a zstd net already in memory
+// (used by the Android build, which embeds its nets in the binary).
+std::stringstream decompress_nnue(const void* data, usize size);
 }  // namespace Stockfish
 
 #endif  // #ifndef MISC_H_INCLUDED

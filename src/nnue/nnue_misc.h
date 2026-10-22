@@ -45,6 +45,8 @@ struct EvalFile {
     std::optional<std::filesystem::path> current;
     // Net description extracted from the net file
     std::string netDescription;
+    // True when the current net was read from the copy embedded in the binary
+    bool embedded = false;
 };
 
 struct NnueEvalTrace {

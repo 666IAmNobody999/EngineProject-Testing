@@ -171,6 +171,40 @@ using RootMoves = std::vector<RootMove>;
 // Stockfish (anchored there to CCRL 40/4); here it is rescaled to the
 // [LowestElo, HighestElo] range of this engine and is a relative strength scale,
 // not a calibrated Xiangqi rating.
+// Attack Mode: how the engine converts its advantage.
+//   BEST_MOVE   : normal search (no overhead at all).
+//   BARE_KING   : once clearly winning, the evaluation seen by the search is
+//                 dominated by the number of opponent pieces already captured,
+//                 and a mate while the opponent still has pieces is worth less
+//                 than capturing one more piece. The real mate score is only
+//                 used against a bare king.
+//   FORCED_DRAW : the search runs as usual with MultiPV >= 6 and the root move
+//                 whose score is closest to zero is played.
+enum class AttackMode {
+    BEST_MOVE,
+    BARE_KING,
+    FORCED_DRAW
+};
+
+namespace Attack {
+// Internal evaluation (side-to-move units) from which the Bare King shaping
+// starts. 600 ~ cp 140 in the Elo score type, roughly 90% win probability.
+constexpr Value Threshold = 600;
+// Fixed value of each opponent piece already captured, on top of the (halved)
+// NNUE evaluation.
+constexpr Value PieceBonus = 500;
+// A mate against a king that still has defenders is worth
+// Threshold + PieceBonus * captured + EarlyMateBonus: one more capture (at least
+// PieceBonus) is always preferred over it, while it still beats shuffling once
+// the halved NNUE surplus over Threshold has fallen below this bonus.
+constexpr Value EarlyMateBonus = 400;
+// MultiPV lines examined by Forced Draw.
+constexpr usize DrawMultiPV = 6;
+
+// Reads the "Attack Mode" combo option.
+AttackMode parse(const OptionsMap& options);
+}
+
 struct Skill {
     // Lowest and highest Elo ratings used in the skill level calculation
     constexpr static int LowestElo  = 1280;
@@ -384,6 +418,13 @@ class Worker {
     StateInfo rootState;
     RootMoves rootMoves;
     Depth     rootDepth;
+    Color     rootColor  = WHITE;
+    AttackMode attackMode = AttackMode::BEST_MOVE;
+
+    // Bare King helpers (see AttackMode). Both are no-ops in BEST_MOVE mode.
+    Value attack_shape_eval(Value v, const Position& pos) const;
+    Value attack_shape_win(Value v, const Position& pos, int ply) const;
+    bool      seekMate = false;
     Value     rootDelta;
 
     PVMoves lastIterationIdxPV;

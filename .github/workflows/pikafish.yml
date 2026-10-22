@@ -15,8 +15,8 @@ jobs:
       ARCH: x86-64-universal
       COMP: clang
       EXE: Pikafish-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
-      # Private network used only for the PGO training run (never shipped; this
-      # fork does not embed the net in the binary).
+      # Private network used only for the PGO training run (never shipped; the
+      # Windows / Linux binaries do not embed the net, only Android does).
       NET_REPO: ${{ vars.NET_REPO }}
       NET_TAG: ${{ vars.NET_TAG }}
       NET_SHA256: ${{ vars.NET_SHA256 }}
@@ -160,19 +160,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download private network for PGO
+      # Android embeds both nets in the binary (Makefile embed=yes, the default
+      # for COMP=ndk), so both files must be present at compile time.
+      - name: Download private networks (embedded in the Android binary)
         env:
           GH_TOKEN: ${{ secrets.NET_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ] || [ -z "$NET_REPO" ] || [ -z "$NET_TAG" ]; then
-            echo "::error::NET_TOKEN secret, NET_REPO and NET_TAG variables are required for the PGO build."
+            echo "::error::NET_TOKEN secret, NET_REPO and NET_TAG variables are required for the Android build."
             exit 1
           fi
-          gh release download "$NET_TAG" --repo "$NET_REPO" --pattern pikafish.nnue --dir . --clobber
+          gh release download "$NET_TAG" --repo "$NET_REPO" \
+            --pattern pikafish.nnue --pattern pikafish_zero_test.nnue --dir . --clobber
           if [ -n "$NET_SHA256" ]; then
             echo "$NET_SHA256  pikafish.nnue" | sha256sum -c -
           fi
-          ls -l pikafish.nnue
+          ls -l pikafish.nnue pikafish_zero_test.nnue
 
       - name: Install NDK
         run: |
@@ -207,9 +210,9 @@ jobs:
           make strip EXE=$EXE
           cp $EXE ../
 
-      - name: Remove private network
+      - name: Remove private networks
         if: always()
-        run: rm -rf pikafish.nnue temp_builds
+        run: rm -rf pikafish.nnue pikafish_zero_test.nnue temp_builds
 
       # Artifacts automatically get zipped.
       # To avoid double-zipping, we use the unzipped directory

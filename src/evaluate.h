@@ -34,6 +34,8 @@ namespace Eval {
 // name of the macro or the location where this macro is defined, as it is used
 // in the Makefile/Fishtest.
 #define EvalFileDefaultName "pikafish.nnue"
+// Second selectable net of the EvalFile combo option (all-zero test net).
+#define EvalFileZeroTestName "pikafish_zero_test.nnue"
 
 namespace NNUE {
 class Network;

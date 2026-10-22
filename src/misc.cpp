@@ -674,4 +674,31 @@ std::stringstream read_compressed_nnue(const std::filesystem::path& fpath) {
     return ss;
 }
 
+std::stringstream decompress_nnue(const void* data, usize size) {
+    std::stringstream ss;
+
+    auto dctxDeleter = [](ZSTD_DCtx* p) {
+        if (p)
+            ZSTD_freeDCtx(p);
+    };
+    std::unique_ptr<ZSTD_DCtx, decltype(dctxDeleter)> dctx = {ZSTD_createDCtx(), dctxDeleter};
+    if (!dctx)
+        return ss;
+
+    std::vector<char> buffOut(ZSTD_DStreamOutSize());
+    ZSTD_inBuffer     input = {data, size, 0};
+
+    while (input.pos < input.size)
+    {
+        ZSTD_outBuffer output = {buffOut.data(), buffOut.size(), 0};
+        usize const    ret    = ZSTD_decompressStream(dctx.get(), &output, &input);
+        if (ZSTD_isError(ret))
+            return std::stringstream{};
+
+        ss.write(buffOut.data(), output.pos);
+    }
+
+    return ss;
+}
+
 }  // namespace Stockfish

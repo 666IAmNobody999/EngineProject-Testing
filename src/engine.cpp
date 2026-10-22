@@ -70,6 +70,12 @@ void force_process_priority() {
 #endif
 }
 
+// EvalFile is a combo option; map its (case-insensitive) value to the exact
+// net file name. Anything unexpected falls back to the default net.
+std::string eval_file_name(const Option& o) {
+    return o == EvalFileZeroTestName ? EvalFileZeroTestName : EvalFileDefaultName;
+}
+
 }  // namespace
 
 namespace NN = Eval::NNUE;
@@ -116,12 +122,15 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add(  //
       "MultiPV", Option(1, 1, MAX_MOVES));
 
-    options.add("Skill Level", Option(20, 0, 20));
-
-    options.add("UCI_LimitStrength", Option(false));
-
-    options.add("UCI_Elo",
-                Option(Search::Skill::LowestElo, Search::Skill::LowestElo, Search::Skill::HighestElo));
+    // Attack Mode: Best Move (normal) / Bare King / Forced Draw. The shaped values
+    // of Bare King live in the transposition table, so switching modes clears it.
+    options.add(  //
+      "Attack Mode",
+      Option("BestMove var BestMove var BareKing var ForcedDraw", "BestMove",
+             [this](const Option&) {
+                 search_clear();
+                 return std::nullopt;
+             }));
 
     options.add(  //
       "Repetition Rule",
@@ -205,8 +214,6 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           return std::nullopt;
       }));
 
-    options.add("UCI_ShowWDL", Option(true));
-
     options.add(  //
       "ScoreType",
       Option("WinRate var Elo var WinRate", "WinRate", [](const Option& o) {
@@ -214,12 +221,22 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                                                     : UCIEngine::ScoreTypeMode::Elo;
           return std::nullopt;
       }));
+	  
+    options.add("UCI_ShowWDL", Option(true));
+	  
+    options.add("Skill Level", Option(20, 0, 20));
+
+    options.add("UCI_LimitStrength", Option(false));
+
+    options.add("UCI_Elo",
+                Option(Search::Skill::LowestElo, Search::Skill::LowestElo, Search::Skill::HighestElo));
 
     options.add(  //
-      "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
-          load_network(path_from_utf8(std::string(o)));
-          return std::nullopt;
-      }));
+      "EvalFile", Option(EvalFileDefaultName " var " EvalFileDefaultName " var " EvalFileZeroTestName,
+                         EvalFileDefaultName, [this](const Option& o) {
+                             load_network(path_from_utf8(eval_file_name(o)));
+                             return std::nullopt;
+                         }));
 	  
     options.add(  //
       "NumaPolicy", Option("auto", [this](const Option& o) {
@@ -373,7 +390,7 @@ void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }
 // network related
 
 void Engine::verify_network() const {
-    const auto file = path_from_utf8(std::string(options["EvalFile"]));
+    const auto file = path_from_utf8(eval_file_name(options["EvalFile"]));
     network->verify(onVerifyNetwork, networkFile, file);
 
     auto statuses = network.get_status_and_errors();

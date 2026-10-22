@@ -229,9 +229,11 @@ void Search::Worker::start_searching() {
     Skill   skill =
       Skill(options["Skill Level"], options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0);
 
-    // With a strength handicap the main thread has already swapped its chosen
-    // sub-optimal move into rootMoves[0]; thread voting would undo that.
-    if (!limits.depth && !skill.enabled())
+    // With a strength handicap or in Forced Draw mode the main thread has
+    // already swapped its chosen move into rootMoves[0]; thread voting would
+    // undo that.
+    if (!limits.depth && !skill.enabled()
+        && Attack::parse(options) != AttackMode::FORCED_DRAW)
         bestThread = threads.get_best_thread()->worker.get();
 
     main_manager()->bestPreviousScore        = bestThread->rootMoves[0].score;
@@ -307,6 +309,13 @@ bool Search::Worker::iterative_deepening() {
     if (skill.enabled())
         multiPV = std::max(multiPV, usize(4));
 
+    rootColor  = rootPos.side_to_move();
+    attackMode = Attack::parse(options);
+
+    // Forced Draw picks, among several root moves, the one closest to a draw.
+    if (attackMode == AttackMode::FORCED_DRAW)
+        multiPV = std::max(multiPV, Attack::DrawMultiPV);
+
     multiPV = std::min(multiPV, rootMoves.size());
 
     int  searchAgainCounter = 0;
@@ -325,12 +334,9 @@ bool Search::Worker::iterative_deepening() {
     {
         rootDepth++;
 
-        // Age out PV variability metric and signal the start of a new iteration
+        // Signal the start of a new iteration
         if (mainThread)
-        {
-            totBestMoveChanges /= 2;
             uciPvSent = false;
-        }
 
         // Save the last iteration's scores before the first PV line is searched and
         // all the move scores except the (new) PV are set to -VALUE_INFINITE.
@@ -360,6 +366,9 @@ bool Search::Worker::iterative_deepening() {
             Value avg = rootMoves[pvIdx].averageScore;
             alpha     = std::max(avg - delta, -VALUE_INFINITE);
             beta      = std::min(avg + delta, VALUE_INFINITE);
+
+            // Do not tune these values. They are not intended for playing strength.
+            seekMate = std::abs(rootMoves[pvIdx].score) >= 750 + 220000 / (rootDepth * rootDepth);
 
             // Adjust optimism based on root move's averageScore
             optimism[us]  = 92 * avg / (std::abs(avg) + 96);
@@ -547,13 +556,6 @@ bool Search::Worker::iterative_deepening() {
         if (skill.enabled() && skill.time_to_pick(rootDepth))
             skill.pick_best(rootMoves, multiPV);
 
-        // Use part of the gained time from a previous stable move for the current move
-        for (auto&& th : threads)
-        {
-            totBestMoveChanges += th->worker->bestMoveChanges;
-            th->worker->bestMoveChanges = 0;
-        }
-
         // Do we have time for the next iteration? Can we stop searching now?
         if (limits.use_time_management() && !threads.stop && !mainThread->stopOnPonderhit)
         {
@@ -571,6 +573,14 @@ bool Search::Worker::iterative_deepening() {
 
             double reduction =
               (2.100 + mainThread->previousTimeReduction) / (2.480 * timeReduction);
+
+            // Age out and update PV variability metric
+            totBestMoveChanges /= 2;
+            for (auto&& th : threads)
+            {
+                totBestMoveChanges += th->worker->bestMoveChanges;
+                th->worker->bestMoveChanges = 0;
+            }
 
             double bestMoveInstability = 0.960 + 1.630 * totBestMoveChanges / threads.size();
 
@@ -619,6 +629,26 @@ bool Search::Worker::iterative_deepening() {
         {
             std::swap(rootMoves[0], *it);
             uciPvSent = false;  // the reported PV must match the played move
+        }
+    }
+
+    // Forced Draw: play the searched root move whose score is closest to zero.
+    // Only lines searched in this iteration (score != -VALUE_INFINITE) qualify,
+    // so an aborted MultiPV loop never promotes an unsearched move. Ties go to
+    // the higher score, then to the better-ranked move.
+    if (attackMode == AttackMode::FORCED_DRAW)
+    {
+        usize chosen = 0;
+        for (usize i = 1; i < multiPV && rootMoves[i].score != -VALUE_INFINITE; ++i)
+        {
+            const Value a = std::abs(rootMoves[i].score), b = std::abs(rootMoves[chosen].score);
+            if (a < b || (a == b && rootMoves[i].score > rootMoves[chosen].score))
+                chosen = i;
+        }
+        if (chosen)
+        {
+            std::swap(rootMoves[0], rootMoves[chosen]);
+            uciPvSent = false;
         }
     }
 
@@ -762,10 +792,6 @@ Value Search::Worker::search(
     constexpr bool rootNode = nodeType == Root;
     const bool     allNode  = !(PvNode || cutNode);
 
-    assert(rootDepth);
-    // Do not tune these values. They are not intended for playing strength.
-    const bool seekMate =
-      std::abs(rootMoves[pvIdx].score) >= 750 + 220000 / (rootDepth * rootDepth);
 
     // Dive into quiescence search when the depth reaches zero
     if (depth <= 0)
@@ -820,7 +846,8 @@ Value Search::Worker::search(
         // Step 2. Check for aborted search or repetition
         Value result = VALUE_NONE;
         if (pos.rule_judge(result, ss->ply))
-            return result == VALUE_DRAW ? value_draw(nodes) : result;
+            return result == VALUE_DRAW ? value_draw(nodes)
+                                        : attack_shape_win(result, pos, ss->ply);
         if (result != VALUE_NONE)
         {
             assert(result != VALUE_DRAW);
@@ -965,11 +992,11 @@ Value Search::Worker::search(
                     return ttData.value;
             }
         }
-        // Case B: No cutoff, but depth was sufficient. Compare the aspiration window to the bound.
-        else if (ttData.bound != BOUND_EXACT
-                 && (ttData.bound & (ttData.value >= beta ? BOUND_UPPER : BOUND_LOWER))
-                 && depth > 5)
+        // Case B: No cutoff, but depth was sufficient, so the bound points the wrong way.
+        else if (depth > 5)
         {
+            assert(!(ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER)));
+
             // If such a mismatch is the only reason cutoff failed, the TT entry is now useless
             ttWriter.penalize(1);
         }
@@ -1017,6 +1044,7 @@ Value Search::Worker::search(
 
         // Null move dynamic reduction based on depth
         Depth R = 8 + depth / 3 + std::max((ss->staticEval - beta) / 282, 0);
+        R -= seekMate * R / 2;
         do_null_move(pos, st, ss);
 
         Value nullValue = -search<NonPV>(pos, ss + 1, -beta, -beta + 1, depth - R, false);
@@ -1108,7 +1136,7 @@ moves_loop:  // When in check, search starts here
     // Step 13. A small ProbCut idea
     probCutBeta = beta + 470;
     if ((ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 4 && ttData.value >= probCutBeta
-        && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value))
+        && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value) && !seekMate)
         return probCutBeta;
 
     const PieceToHistory* contHist[] = {
@@ -1357,6 +1385,10 @@ moves_loop:  // When in check, search starts here
         if (allNode)
             r += r * 254 / (256 * depth + 255);
 
+        // When seeking a mate, reduce non-checking moves more and checking moves less
+        if (seekMate && r > 0)
+            r += (givesCheck ? -r : r) / 4;
+
         // Apply the computed LMR
         if (depth >= 2 && moveCount > 1)
         {
@@ -1562,7 +1594,7 @@ moves_loop:  // When in check, search starts here
     // must be a mate or a stalemate (just a fail low score if we are in a
     // singular extension search).
     if (!moveCount)
-        bestValue = excludedMove ? alpha : mated_in(ss->ply);
+        bestValue = excludedMove ? alpha : attack_shape_win(mated_in(ss->ply), pos, ss->ply);
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1600,8 +1632,9 @@ moves_loop:  // When in check, search starts here
     }
 
     // Bonus for prior capture countermove that caused the fail low
-    else if (priorCapture && prevSq != SQ_NONE)
+    else if (prevSq != SQ_NONE)
     {
+        assert(priorCapture);
         Piece capturedPiece = pos.captured_piece();
         assert(capturedPiece != NO_PIECE);
         captureHistory[pos.piece_on(prevSq)][prevSq][type_of(capturedPiece)] << 990;
@@ -1684,7 +1717,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     // Step 2. Check for repetition or maximum ply reached
     Value result = VALUE_NONE;
     if (pos.rule_judge(result, ss->ply))
-        return result;
+        return attack_shape_win(result, pos, ss->ply);
     if (result != VALUE_NONE)
     {
         assert(result != VALUE_DRAW);
@@ -1755,8 +1788,8 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         // Stand pat. Return immediately if static value is at least beta
         if (bestValue >= beta)
         {
-            if (!is_decisive(bestValue))
-                bestValue = (464 * bestValue + 560 * beta) / 1024;
+            assert(!is_decisive(bestValue));
+            bestValue = (464 * bestValue + 560 * beta) / 1024;
 
             if (!ss->ttHit)
                 ttWriter.write(posKey, VALUE_NONE, false, BOUND_LOWER, DEPTH_UNSEARCHED,
@@ -1862,7 +1895,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     if (!moveCount && (ss->inCheck || !MoveList<QUIETS>(pos).size()))
     {
         assert(!MoveList<ALL>(pos).size());
-        return mated_in(ss->ply);  // Plies to mate from the root
+        return attack_shape_win(mated_in(ss->ply), pos, ss->ply);  // Plies to mate from the root
     }
 
     if (!is_decisive(bestValue) && bestValue > beta)
@@ -1896,8 +1929,56 @@ TimePoint Search::Worker::elapsed() const {
 // Evaluate the current position of the game tree, from the point of view of
 // the side to move.
 Value Search::Worker::evaluate(const Position& pos) {
-    return Eval::evaluate(network[numaAccessToken], pos, accumulatorStack, refreshTable,
-                          optimism[pos.side_to_move()]);
+    Value v = Eval::evaluate(network[numaAccessToken], pos, accumulatorStack, refreshTable,
+                             optimism[pos.side_to_move()]);
+    return attackMode == AttackMode::BARE_KING ? attack_shape_eval(v, pos) : v;
+}
+
+
+AttackMode Search::Attack::parse(const OptionsMap& options) {
+    const Option& o = options["Attack Mode"];
+    return o == "BareKing"   ? AttackMode::BARE_KING
+         : o == "ForcedDraw" ? AttackMode::FORCED_DRAW
+                             : AttackMode::BEST_MOVE;
+}
+
+
+// Bare King: reshape a static evaluation (side-to-move units). Once the root
+// side is clearly winning, every opponent piece already captured adds a fixed
+// bonus, while the NNUE evaluation keeps half of its slope so that the engine
+// still values its own material and keeps making progress between captures.
+Value Search::Worker::attack_shape_eval(Value v, const Position& pos) const {
+    const Color stm = pos.side_to_move();
+    Value       e   = stm == rootColor ? v : -v;  // root side's point of view
+
+    if (e >= Attack::Threshold)
+    {
+        const int captured = 16 - pos.count<ALL_PIECES>(~rootColor);  // 15 non-king pieces at most
+        e = Attack::Threshold + (e - Attack::Threshold) / 2 + Attack::PieceBonus * captured;
+        e = std::min(e, VALUE_MATE_IN_MAX_PLY - 1);
+    }
+    return stm == rootColor ? e : -e;
+}
+
+
+// Bare King: a win (board mate, no legal moves or rule verdict) for the root
+// side against a king that still has defenders is converted into a plateau
+// value just above the shaped evaluation, so that capturing one more piece is
+// always preferred, while the mate is still preferred over shuffling. Wins for
+// the opponent and wins against a bare king keep their real mate score.
+Value Search::Worker::attack_shape_win(Value v, const Position& pos, int ply) const {
+    if (attackMode != AttackMode::BARE_KING)
+        return v;
+
+    const Color stm     = pos.side_to_move();
+    const bool  rootWin = stm == rootColor ? is_win(v) : is_loss(v);
+    if (!rootWin || pos.count<ALL_PIECES>(~rootColor) <= 1)
+        return v;
+
+    const int   captured = 16 - pos.count<ALL_PIECES>(~rootColor);
+    const Value e        = Attack::Threshold + Attack::PieceBonus * captured
+                  + Attack::EarlyMateBonus - std::min(ply, 96) / 4;
+    return stm == rootColor ? e : -e;
 }
 
 namespace {

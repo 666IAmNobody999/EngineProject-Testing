@@ -76,6 +76,7 @@ class Network {
                                  AccumulatorCaches& cache) const;
 
     void load_external(const std::filesystem::path&, const std::filesystem::path&, EvalFile&);
+    void load_internal(const std::filesystem::path&, EvalFile&);
 
    private:
     void initialize();

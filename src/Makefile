@@ -32,6 +32,14 @@ ifeq ($(COMP),ndk)
 	OS := Android
 endif
 
+### Embed the NNUE nets (pikafish.nnue + pikafish_zero_test.nnue) in the binary.
+### Default: yes for Android (COMP=ndk), no for every other target.
+ifeq ($(COMP),ndk)
+	embed ?= yes
+else
+	embed ?= no
+endif
+
 ### Command prefix to run the built executable (e.g. wine, sde, qemu)
 ### Backward compatible alias: WINE_PATH (deprecated)
 ifneq ($(strip $(WINE_PATH)),)
@@ -92,6 +100,7 @@ VPATH = $(shell find -L . \( -path './universal' -o -path './temp_builds' \) -pr
 # ----------------------------------------------------------------------------
 #
 # debug = yes/no      --- -DNDEBUG           --- Enable/Disable debug mode
+# embed = yes/no      --- -DNNUE_EMBEDDING   --- Embed both nets (default yes for COMP=ndk)
 # sanitize = none/<sanitizer> ... (-fsanitize )
 #                     --- ( undefined )      --- enable undefined behavior checks
 #                     --- ( thread    )      --- enable threading error checks
@@ -706,6 +715,12 @@ else
 	CXXFLAGS += -D_GLIBCXX_ASSERTIONS -D_GLIBCXX_DEBUG
 endif
 
+### 3.2.1b Embedded nets (nnue/embedded_nets.S)
+EMBED_NETS = pikafish.nnue pikafish_zero_test.nnue
+ifeq ($(embed),yes)
+	CXXFLAGS += -DNNUE_EMBEDDING
+endif
+
 ### 3.2.2 Debugging with undefined behavior sanitizers
 ifneq ($(sanitize),none)
         CXXFLAGS += -g3 $(addprefix -fsanitize=,$(sanitize))
@@ -1302,6 +1317,14 @@ $(EXE): $(OBJS)
 %.o: %.S
 	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS)) -c -o $@ $<
 
+ifeq ($(embed),yes)
+embedded_nets.o: $(EMBED_NETS)
+
+$(EMBED_NETS):
+	@echo "embed=yes needs $@ in $(CURDIR) (both nets are compiled into the binary)." >&2
+	@false
+endif
+
 %.o: %.cpp
 	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS)) -c -o $@ $<
 
@@ -1471,9 +1494,9 @@ $(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
 	@rm -rf $(TEMP_DIR)/$*
 	@mkdir -p $(TEMP_DIR)/$*
 	@$(foreach f,$(TRACKED_TOP),ln -s $(CURDIR)/$(f) $(TEMP_DIR)/$*/$(f);)
-# This fork does not embed the network, so the PGO bench of every slice must be able
-# to load it from its working directory.
-	@if [ -f $(CURDIR)/pikafish.nnue ]; then ln -s $(CURDIR)/pikafish.nnue $(TEMP_DIR)/$*/pikafish.nnue; fi
+# The nets are symlinked into every slice: the PGO bench loads pikafish.nnue from the
+# working directory, and with embed=yes (Android) nnue/embedded_nets.S .incbin's both.
+	@$(foreach f,$(EMBED_NETS),if [ -f $(CURDIR)/$(f) ]; then ln -sf $(CURDIR)/$(f) $(TEMP_DIR)/$*/$(f); fi;)
 	@touch $@
 
 # Per-arch pikafish.o

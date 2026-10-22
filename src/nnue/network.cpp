@@ -28,12 +28,25 @@
 #include <vector>
 #include <filesystem>
 
+#include "../evaluate.h"
 #include "../misc.h"
 #include "../types.h"
 #include "nnue_architecture.h"
 #include "nnue_common.h"
 #include "nnue_misc.h"
 #include "nnz_helper.h"
+
+#if defined(NNUE_EMBEDDING)
+// Defined in nnue/embedded_nets.S (only assembled with embed=yes, the default for
+// COMP=ndk). The symbols are global and outside any namespace so that every slice
+// of a universal binary shares one copy of the nets.
+extern "C" {
+extern const unsigned char pikafish_embedded_net_main[];
+extern const unsigned char pikafish_embedded_net_main_end[];
+extern const unsigned char pikafish_embedded_net_zero[];
+extern const unsigned char pikafish_embedded_net_zero_end[];
+}
+#endif
 
 namespace Stockfish::Eval::NNUE {
 
@@ -72,6 +85,13 @@ void Network::load(const fs::path& rootDirectory, fs::path evalfilePath, EvalFil
 
     if (evalfilePath.empty())
         evalfilePath = evalFile.defaultName;
+
+#if defined(NNUE_EMBEDDING)
+    // The embedded copy always matches this binary, so it takes precedence; a file
+    // with the same name is only used if the embedded net cannot be read.
+    if (evalFile.current != evalfilePath)
+        load_internal(evalfilePath, evalFile);
+#endif
 
     for (const auto& directory : dirs)
     {
@@ -162,7 +182,8 @@ void Network::verify(const std::function<void(std::string_view)>& f,
     if (f)
     {
         usize size = sizeof(featureTransformer) + sizeof(NetworkArchitecture) * LayerStacks;
-        f("NNUE evaluation using " + evalfilePath.string() + " ("
+        f("NNUE evaluation using " + evalfilePath.string()
+          + (evalFile.embedded ? " (embedded)" : "") + " ("
           + std::to_string(size / (1024 * 1024)) + "MiB, ("
           + std::to_string(featureTransformer.InputDimensions) + ", "
           + std::to_string(network[0].TransformedFeatureDimensions) + ", "
@@ -206,7 +227,40 @@ void Network::load_external(const fs::path& dir, const fs::path& evalfilePath, E
     {
         evalFile.current        = evalfilePath;
         evalFile.netDescription = description.value();
+        evalFile.embedded       = false;
     }
+}
+
+
+void Network::load_internal([[maybe_unused]] const fs::path& evalfilePath,
+                            [[maybe_unused]] EvalFile&       evalFile) {
+#if defined(NNUE_EMBEDDING)
+    struct EmbeddedNet {
+        const char*          name;
+        const unsigned char* begin;
+        const unsigned char* end;
+    };
+    const EmbeddedNet nets[] = {
+      {EvalFileDefaultName, pikafish_embedded_net_main, pikafish_embedded_net_main_end},
+      {EvalFileZeroTestName, pikafish_embedded_net_zero, pikafish_embedded_net_zero_end}};
+
+    for (const auto& net : nets)
+    {
+        if (evalfilePath != fs::path(net.name) || net.end <= net.begin)
+            continue;
+
+        std::stringstream stream(decompress_nnue(net.begin, usize(net.end - net.begin)));
+        auto              description = load(stream);
+
+        if (description.has_value())
+        {
+            evalFile.current        = evalfilePath;
+            evalFile.netDescription = description.value();
+            evalFile.embedded       = true;
+        }
+        return;
+    }
+#endif
 }
 
 
