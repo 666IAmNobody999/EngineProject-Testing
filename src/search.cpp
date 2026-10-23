@@ -625,6 +625,17 @@ bool Search::Worker::iterative_deepening() {
     {
         Move chosen = skill.best ? skill.best : skill.pick_best(rootMoves, multiPV);
         auto it     = std::find(rootMoves.begin(), rootMoves.end(), chosen);
+
+        // A move fixed at a shallow depth that the full search now shows to be
+        // losing (score below a draw) is not played; choose again from the
+        // final scores (the best move when behind, a sound move otherwise).
+        if (it != rootMoves.end() && it->score != -VALUE_INFINITE && it->score < VALUE_DRAW
+            && rootMoves[0].score >= VALUE_DRAW)
+        {
+            chosen = skill.pick_best(rootMoves, multiPV);
+            it     = std::find(rootMoves.begin(), rootMoves.end(), chosen);
+        }
+
         if (it != rootMoves.end() && it != rootMoves.begin())
         {
             std::swap(rootMoves[0], *it);
@@ -661,12 +672,22 @@ bool Search::Worker::iterative_deepening() {
 Move Search::Skill::pick_best(const RootMoves& rootMoves, usize multiPV) {
     static PRNG rng(u64(now()) | 1);  // PRNG sequence should be non-deterministic
 
-    // RootMoves are already sorted by score in descending order
+    Value topScore = rootMoves[0].score;
+
+    // A handicapped engine never gambles when it is already behind: with the
+    // best move below a draw it plays the best move and nothing is fixed, so
+    // the final (deepest) best move is used when the search ends.
+    if (topScore < VALUE_DRAW)
+        return rootMoves[0].pv[0];
+
+    // RootMoves are already sorted by score in descending order. Only lines
+    // that were searched in this iteration (a stopped search may leave some at
+    // -VALUE_INFINITE) and that keep at least a draw (score >= 0) are
+    // candidates, so a weak move is never chosen in place of a sound one.
     usize valid = 1;
-    while (valid < multiPV && rootMoves[valid].score != -VALUE_INFINITE)
+    while (valid < multiPV && rootMoves[valid].score >= VALUE_DRAW)
         ++valid;
 
-    Value  topScore = rootMoves[0].score;
     int    delta    = std::min(topScore - rootMoves[valid - 1].score, int(PawnValue));
     int    maxScore = -VALUE_INFINITE;
     double weakness = 120 - 2 * level;
@@ -674,13 +695,8 @@ Move Search::Skill::pick_best(const RootMoves& rootMoves, usize multiPV) {
     // Choose best move. For each move score we add two terms, both dependent on
     // weakness. One is deterministic and bigger for weaker levels, and one is
     // random. Then we choose the move with the resulting highest score.
-    for (usize i = 0; i < multiPV; ++i)
+    for (usize i = 0; i < valid; ++i)
     {
-        // Never pick a line that was not searched in this iteration
-        // (e.g. a search stopped before the MultiPV loop finished).
-        if (i > 0 && rootMoves[i].score == -VALUE_INFINITE)
-            break;
-
         // This is our magic formula
         int push = int((weakness * int(topScore - rootMoves[i].score)
                         + delta * (rng.rand<unsigned>() % int(weakness)))
