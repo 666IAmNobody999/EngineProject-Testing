@@ -47,6 +47,10 @@ class UCIEngine {
     void loop();
 
     static int         to_cp(Value v, const Position& pos);
+    // Normalised centipawns (100 * v / a), independent of the ScoreType display
+    // mode. Used by the Human-like Attack Mode so that its thresholds are in the
+    // same units as the Elo score type.
+    static int         to_cp_normalized(Value v, const Position& pos);
     static std::string format_score(const Score& s);
     static std::string square(Square s);
     static std::string move(Move m);

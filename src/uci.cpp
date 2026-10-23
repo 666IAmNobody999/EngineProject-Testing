@@ -604,6 +604,11 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
     return int(std::round(100.0 * int(v) / a));
 }
 
+int UCIEngine::to_cp_normalized(Value v, const Position& pos) {
+    auto [a, b] = win_rate_params(pos);
+    return int(std::round(100.0 * int(v) / a));
+}
+
 std::string UCIEngine::wdl(Value v, const Position& pos) {
     std::stringstream ss;
 

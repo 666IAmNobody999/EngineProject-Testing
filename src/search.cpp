@@ -229,11 +229,11 @@ void Search::Worker::start_searching() {
     Skill   skill =
       Skill(options["Skill Level"], options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0);
 
-    // With a strength handicap or in Forced Draw mode the main thread has
-    // already swapped its chosen move into rootMoves[0]; thread voting would
-    // undo that.
-    if (!limits.depth && !skill.enabled()
-        && Attack::parse(options) != AttackMode::FORCED_DRAW)
+    // With a strength handicap or in Forced Draw / Human-like mode the main
+    // thread has already swapped its chosen move into rootMoves[0]; thread
+    // voting would undo that.
+    if (!limits.depth && !skill.enabled() && Attack::parse(options) != AttackMode::FORCED_DRAW
+        && !Attack::human_like(Attack::parse(options)))
         bestThread = threads.get_best_thread()->worker.get();
 
     main_manager()->bestPreviousScore        = bestThread->rootMoves[0].score;
@@ -315,6 +315,10 @@ bool Search::Worker::iterative_deepening() {
     // Forced Draw picks, among several root moves, the one closest to a draw.
     if (attackMode == AttackMode::FORCED_DRAW)
         multiPV = std::max(multiPV, Attack::DrawMultiPV);
+
+    // Human-like needs a few alternatives to choose a slightly worse move from.
+    if (Attack::human_like(attackMode))
+        multiPV = std::max(multiPV, Attack::HumanMultiPV);
 
     multiPV = std::min(multiPV, rootMoves.size());
 
@@ -660,6 +664,52 @@ bool Search::Worker::iterative_deepening() {
         {
             std::swap(rootMoves[0], rootMoves[chosen]);
             uciPvSent = false;
+        }
+    }
+
+    // Human-like: when clearly ahead (best move above HumanMinAdvantage cp),
+    // once in HumanChance moves play a searched root move that is between
+    // HumanMinDrop and HumanMaxDrop cp worse than the best one, preferring the
+    // smallest drop. Only the main thread decides (its move is the one played,
+    // thread voting is off in this mode), the handicap of Skill Level already
+    // randomises, so nothing is done when it is enabled, and decisive (mate)
+    // scores never take part. The chosen move is still at least a draw, as the
+    // drop never exceeds the advantage.
+    if (Attack::human_like(attackMode) && is_mainthread() && !skill.enabled()
+        && !is_decisive(rootMoves[0].score))
+    {
+        static PRNG rng(u64(now()) | 1);
+
+        const int bestCp = UCIEngine::to_cp_normalized(rootMoves[0].score, rootPos);
+
+        // Above the Bare King threshold the shaped scores move at half the slope of
+        // the real evaluation (captures add a fixed bonus that stays outside the
+        // window), so in the combined mode the drop window is halved to keep the
+        // same 50..100 cp meaning in real evaluation.
+        const bool shaped = Attack::bare_king(attackMode) && rootMoves[0].score >= Attack::Threshold;
+        const int  minDropCp = shaped ? Attack::HumanMinDrop / 2 : Attack::HumanMinDrop;
+        const int  maxDropCp = shaped ? Attack::HumanMaxDrop / 2 : Attack::HumanMaxDrop;
+
+        if (bestCp > Attack::HumanMinAdvantage && rng.rand<unsigned>() % Attack::HumanChance == 0)
+        {
+            usize chosen  = 0;
+            int   minDrop = maxDropCp + 1;
+            for (usize i = 1; i < multiPV && rootMoves[i].score != -VALUE_INFINITE; ++i)
+            {
+                if (is_decisive(rootMoves[i].score))
+                    continue;
+                const int drop = bestCp - UCIEngine::to_cp_normalized(rootMoves[i].score, rootPos);
+                if (drop >= minDropCp && drop < minDrop)
+                {
+                    minDrop = drop;
+                    chosen  = i;
+                }
+            }
+            if (chosen)
+            {
+                std::swap(rootMoves[0], rootMoves[chosen]);
+                uciPvSent = false;
+            }
         }
     }
 
@@ -1345,6 +1395,12 @@ moves_loop:  // When in check, search starts here
                 extension = -3;
         }
 
+        // When seeking a mate, extend checking moves that got no other extension:
+        // forcing lines are then seen at a lower nominal depth, so mates are
+        // found with fewer nodes (measured -15..-19% on two mate suites).
+        if (seekMate && givesCheck && extension == 0)
+            extension = 1;
+
         u64 nodeCount = rootNode ? u64(nodes) : 0;
 
         // Step 17. Make the move
@@ -1947,15 +2003,17 @@ TimePoint Search::Worker::elapsed() const {
 Value Search::Worker::evaluate(const Position& pos) {
     Value v = Eval::evaluate(network[numaAccessToken], pos, accumulatorStack, refreshTable,
                              optimism[pos.side_to_move()]);
-    return attackMode == AttackMode::BARE_KING ? attack_shape_eval(v, pos) : v;
+    return Attack::bare_king(attackMode) ? attack_shape_eval(v, pos) : v;
 }
 
 
 AttackMode Search::Attack::parse(const OptionsMap& options) {
     const Option& o = options["Attack Mode"];
-    return o == "BareKing"   ? AttackMode::BARE_KING
-         : o == "ForcedDraw" ? AttackMode::FORCED_DRAW
-                             : AttackMode::BEST_MOVE;
+    return o == "BareKing"          ? AttackMode::BARE_KING
+         : o == "HumanLike"         ? AttackMode::HUMAN_LIKE
+         : o == "HumanLikeBareKing" ? AttackMode::HUMAN_LIKE_BARE_KING
+         : o == "ForcedDraw"        ? AttackMode::FORCED_DRAW
+                                    : AttackMode::BEST_MOVE;
 }
 
 
@@ -1983,7 +2041,7 @@ Value Search::Worker::attack_shape_eval(Value v, const Position& pos) const {
 // always preferred, while the mate is still preferred over shuffling. Wins for
 // the opponent and wins against a bare king keep their real mate score.
 Value Search::Worker::attack_shape_win(Value v, const Position& pos, int ply) const {
-    if (attackMode != AttackMode::BARE_KING)
+    if (!Attack::bare_king(attackMode))
         return v;
 
     const Color stm     = pos.side_to_move();

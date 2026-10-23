@@ -178,15 +178,27 @@ using RootMoves = std::vector<RootMove>;
 //                 and a mate while the opponent still has pieces is worth less
 //                 than capturing one more piece. The real mate score is only
 //                 used against a bare king.
+//   HUMAN_LIKE_BARE_KING : both of the above; the Human-like choice is made on
+//                 the Bare King shaped scores.
 //   FORCED_DRAW : the search runs as usual with MultiPV >= 6 and the root move
 //                 whose score is closest to zero is played.
 enum class AttackMode {
     BEST_MOVE,
     BARE_KING,
+    HUMAN_LIKE,
+    HUMAN_LIKE_BARE_KING,  // Bare King evaluation shaping + Human-like root choice
     FORCED_DRAW
 };
 
 namespace Attack {
+// Which behaviours a mode switches on
+constexpr bool bare_king(AttackMode m) {
+    return m == AttackMode::BARE_KING || m == AttackMode::HUMAN_LIKE_BARE_KING;
+}
+constexpr bool human_like(AttackMode m) {
+    return m == AttackMode::HUMAN_LIKE || m == AttackMode::HUMAN_LIKE_BARE_KING;
+}
+
 // Internal evaluation (side-to-move units) from which the Bare King shaping
 // starts. 600 ~ cp 140 in the Elo score type, roughly 90% win probability.
 constexpr Value Threshold = 600;
@@ -200,6 +212,16 @@ constexpr Value PieceBonus = 500;
 constexpr Value EarlyMateBonus = 400;
 // MultiPV lines examined by Forced Draw.
 constexpr usize DrawMultiPV = 6;
+
+// Human-like: with the best move worth more than HumanMinAdvantage (normalised
+// centipawns, Elo score type units) there is a 1 in HumanChance probability of
+// playing, instead of the best move, the searched root move that is between
+// HumanMinDrop and HumanMaxDrop centipawns worse, preferring the smallest drop.
+constexpr usize HumanMultiPV      = 4;
+constexpr int   HumanChance       = 5;
+constexpr int   HumanMinAdvantage = 100;
+constexpr int   HumanMinDrop      = 50;
+constexpr int   HumanMaxDrop      = 150;
 
 // Reads the "Attack Mode" combo option.
 AttackMode parse(const OptionsMap& options);
