@@ -193,13 +193,14 @@ enum class AttackMode {
 // Search Algorithm option.
 //   ORIGINAL          : plain iterative deepening, MultiPV as configured.
 //   IMPROVED_MULTIPV2 : when MultiPV is 1 (and no Skill / Attack mode needs more
-//                 lines) a second root line is searched as in MultiPV 2, but its
-//                 depth is capped at AltMaxDepth. Up to the cap this gives the GUI
-//                 two lines and lets the second best move be examined with a full
-//                 window instead of a reduced null window; beyond the cap the
-//                 second line is re-verified every iteration at the capped depth,
-//                 which mostly resolves from the transposition table and costs
-//                 almost nothing. Promotion of the second line happens through the
+//                 lines) the main thread searches a second root line as in
+//                 MultiPV 2, but its depth is capped at AltMaxDepth. Up to the cap
+//                 the second best move is examined with a full window instead of a
+//                 reduced null window; beyond the cap only the second line's own
+//                 move is re-verified at the capped depth. The second line is not
+//                 printed (GUIs and cloud front ends expect one line) and it is
+//                 skipped while it is known to be more than AltWindowCp behind the
+//                 main line or while the main line is already clearly winning. Promotion of the second line happens through the
 //                 normal principal variation search of the next iteration, which
 //                 is the only sound judge between scores of different depths.
 enum class SearchAlgorithm {
@@ -208,7 +209,10 @@ enum class SearchAlgorithm {
 };
 
 namespace Improved {
-constexpr Depth AltMaxDepth = 20;  // depth cap of the second line
+constexpr Depth AltMaxDepth    = 20;   // depth cap of the second line
+constexpr int   AltWindowCp    = 150;  // second line skipped when this far behind (cp)
+constexpr Depth AltRecheckEvery = 4;   // ... but re-checked at least every N plies
+constexpr int   AltMaxAdvantageCp = 24000;  // no second line once the main line is this far ahead
 
 SearchAlgorithm parse(const OptionsMap& options);
 }
@@ -454,8 +458,8 @@ class Worker {
     LimitsType limits;
 
     usize              pvIdx, pvLast;
-    usize              pvLines  = 1;        // root lines searched in the current iteration
-    Depth              altDepth = MAX_PLY;  // depth of the lines after the first (Improved MultiPV 2)
+    Value              altScore      = -VALUE_INFINITE;  // last exact score of the second line
+    Depth              altScoreDepth = 0;                // ... and the iteration it was obtained in
     RelaxedAtomic<u64> nodes, bestMoveChanges;
     int                selDepth, nmpMinPly;
 
