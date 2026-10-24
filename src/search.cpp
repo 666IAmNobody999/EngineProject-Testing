@@ -322,6 +322,12 @@ bool Search::Worker::iterative_deepening() {
 
     multiPV = std::min(multiPV, rootMoves.size());
 
+    // Improved MultiPV 2: a depth-capped second line next to the main line
+    const bool altLine = Improved::parse(options) == SearchAlgorithm::IMPROVED_MULTIPV2
+                      && multiPV == 1 && !skill.enabled() && rootMoves.size() > 1;
+    pvLines  = multiPV;
+    altDepth = MAX_PLY;
+
     int  searchAgainCounter = 0;
     int  failHighRecovery   = 0;
     bool uciPvSent          = false;
@@ -342,13 +348,20 @@ bool Search::Worker::iterative_deepening() {
         if (mainThread)
             uciPvSent = false;
 
+        // Lines searched in this iteration. Improved MultiPV 2 adds a second line
+        // whose depth is capped at AltMaxDepth.
+        const usize lines = altLine ? 2 : multiPV;
+        pvLines           = lines;
+        if (altLine)
+            altDepth = std::min(rootDepth, Improved::AltMaxDepth);
+
         // Save the last iteration's scores before the first PV line is searched and
         // all the move scores except the (new) PV are set to -VALUE_INFINITE.
         for (usize i = 0; i < rootMoves.size(); ++i)
         {
             rootMoves[i].previousScore      = rootMoves[i].score;
             rootMoves[i].previousPV         = rootMoves[i].pv;
-            rootMoves[i].previousScoreExact = i < multiPV;
+            rootMoves[i].previousScoreExact = i < lines;
         }
 
         usize pvFirst = 0;
@@ -358,8 +371,16 @@ bool Search::Worker::iterative_deepening() {
             searchAgainCounter++;
 
         // MultiPV loop: we perform a full root search for each PV line
-        for (pvIdx = 0; pvIdx < multiPV; ++pvIdx)
+        for (pvIdx = 0; pvIdx < lines; ++pvIdx)
         {
+            // Beyond the depth cap the second line only re-verifies its own move
+            // (the best alternative found up to the cap): searching all the other
+            // root moves again at the capped depth would cost a full MultiPV 2
+            // iteration, because their transposition table bounds from the main
+            // line do not match the second line's window.
+            pvLast = altLine && pvIdx && rootDepth > Improved::AltMaxDepth ? pvIdx + 1
+                                                                            : rootMoves.size();
+
             lastIterationIdxPV = rootMoves[pvIdx].previousPV;
 
             // Reset UCI info selDepth for each depth and each PV line
@@ -389,7 +410,10 @@ bool Search::Worker::iterative_deepening() {
                 // effective increment for every four searchAgain steps (see issue #2717).
                 Depth adjustedDepth = std::max(1, rootDepth - failedHighCnt - failHighRecovery
                                                     - 3 * (searchAgainCounter + 1) / 4);
-                rootDelta           = beta - alpha;
+                // The second line of Improved MultiPV 2 never goes beyond the cap
+                if (altLine && pvIdx)
+                    adjustedDepth = std::min(adjustedDepth, Improved::AltMaxDepth);
+                rootDelta = beta - alpha;
                 bestValue           = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
                 // Bring the best move to the front. It is critical that sorting
@@ -409,7 +433,7 @@ bool Search::Worker::iterative_deepening() {
                 // When failing high/low give some update before a re-search. To avoid
                 // excessive output that could hang GUIs like Fritz 19, only start
                 // at nodes > 10M (rather than depth N, which can be reached quickly).
-                if (mainThread && multiPV == 1 && (bestValue <= alpha || bestValue >= beta)
+                if (mainThread && lines == 1 && (bestValue <= alpha || bestValue >= beta)
                     && nodes > NODES_LIMIT_OUTPUT)
                     main_manager()->output_pv(*this, threads, tt, rootDepth);
 
@@ -486,18 +510,21 @@ bool Search::Worker::iterative_deepening() {
                 }
 
                 // Finally, we mark all loss scores from partially searched moves as inexact.
-                for (usize i = pvIdx + 1; i < multiPV; ++i)
+                for (usize i = pvIdx + 1; i < lines; ++i)
                     if (rootMoves[i].is_exact_loss())
                         rootMoves[i].inexactLower = true;
             }
 
-            // Sort the PV lines searched so far and update the GUI
-            std::stable_sort(rootMoves.begin() + pvFirst, rootMoves.begin() + pvIdx + 1);
+            // Sort the PV lines searched so far and update the GUI. A depth-capped
+            // second line must never overtake the deeper main line on its score:
+            // promotion is left to the next iteration's full-depth search.
+            if (!(altLine && pvIdx && rootDepth > Improved::AltMaxDepth))
+                std::stable_sort(rootMoves.begin() + pvFirst, rootMoves.begin() + pvIdx + 1);
 
-            if (mainThread && !threads.stop && (pvIdx + 1 == multiPV || nodes > NODES_LIMIT_OUTPUT))
+            if (mainThread && !threads.stop && (pvIdx + 1 == lines || nodes > NODES_LIMIT_OUTPUT))
             {
                 main_manager()->output_pv(*this, threads, tt, rootDepth);
-                uciPvSent = (pvIdx + 1 == multiPV);
+                uciPvSent = (pvIdx + 1 == lines);
             }
 
             if (threads.stop)
@@ -2007,6 +2034,11 @@ Value Search::Worker::evaluate(const Position& pos) {
 }
 
 
+SearchAlgorithm Search::Improved::parse(const OptionsMap& options) {
+    return options["Search Algorithm"] == "Original" ? SearchAlgorithm::ORIGINAL
+                                                     : SearchAlgorithm::IMPROVED_MULTIPV2;
+}
+
 AttackMode Search::Attack::parse(const OptionsMap& options) {
     const Option& o = options["Attack Mode"];
     return o == "BareKing"          ? AttackMode::BARE_KING
@@ -2235,7 +2267,7 @@ void SearchManager::output_pv(Search::Worker&           worker,
     const auto nodes     = threads.nodes_searched();
     auto&      rootMoves = worker.rootMoves;
     auto&      pos       = worker.rootPos;
-    usize      multiPV   = std::min(usize(worker.options["MultiPV"]), rootMoves.size());
+    usize      multiPV   = std::min(worker.pvLines, rootMoves.size());
 
     for (usize i = 0; i < multiPV; ++i)
     {
@@ -2245,6 +2277,8 @@ void SearchManager::output_pv(Search::Worker&           worker,
             continue;
 
         Depth d = usePreviousScore ? std::max(1, depth - 1) : depth;
+        if (i > 0)
+            d = std::min(d, worker.altDepth);
         Value v = usePreviousScore ? rootMoves[i].previousScore : rootMoves[i].uciScore;
 
         if (v == -VALUE_INFINITE)

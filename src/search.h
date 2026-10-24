@@ -190,6 +190,29 @@ enum class AttackMode {
     FORCED_DRAW
 };
 
+// Search Algorithm option.
+//   ORIGINAL          : plain iterative deepening, MultiPV as configured.
+//   IMPROVED_MULTIPV2 : when MultiPV is 1 (and no Skill / Attack mode needs more
+//                 lines) a second root line is searched as in MultiPV 2, but its
+//                 depth is capped at AltMaxDepth. Up to the cap this gives the GUI
+//                 two lines and lets the second best move be examined with a full
+//                 window instead of a reduced null window; beyond the cap the
+//                 second line is re-verified every iteration at the capped depth,
+//                 which mostly resolves from the transposition table and costs
+//                 almost nothing. Promotion of the second line happens through the
+//                 normal principal variation search of the next iteration, which
+//                 is the only sound judge between scores of different depths.
+enum class SearchAlgorithm {
+    IMPROVED_MULTIPV2,
+    ORIGINAL
+};
+
+namespace Improved {
+constexpr Depth AltMaxDepth = 20;  // depth cap of the second line
+
+SearchAlgorithm parse(const OptionsMap& options);
+}
+
 namespace Attack {
 // Which behaviours a mode switches on
 constexpr bool bare_king(AttackMode m) {
@@ -431,6 +454,8 @@ class Worker {
     LimitsType limits;
 
     usize              pvIdx, pvLast;
+    usize              pvLines  = 1;        // root lines searched in the current iteration
+    Depth              altDepth = MAX_PLY;  // depth of the lines after the first (Improved MultiPV 2)
     RelaxedAtomic<u64> nodes, bestMoveChanges;
     int                selDepth, nmpMinPly;
 

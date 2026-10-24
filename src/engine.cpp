@@ -122,6 +122,14 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add(  //
       "MultiPV", Option(1, 1, MAX_MOVES));
 
+    options.add(  //
+      "Search Algorithm",
+      Option("ImprovedMultiPV2 var ImprovedMultiPV2 var Original", "ImprovedMultiPV2",
+             [this](const Option&) {
+                 search_clear();
+                 return std::nullopt;
+             }));
+
     // Attack Mode: Best Move (normal) / Bare King / Forced Draw. The shaped values
     // of Bare King live in the transposition table, so switching modes clears it.
     options.add(  //
