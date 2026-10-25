@@ -1932,20 +1932,17 @@ Value Position::detect_chases(int d, int ply) {
         }
     }
 
-    // Check/chase alternation (一将一捉) is forbidden in Asian/Yitian: a mixed side
-    // loses against an allowed opponent (idle moves). Against a perpetual-chasing
-    // opponent both sides are forbidden and the game is drawn; both mixed is a draw.
-    // (SkyRule keeps "mixed side loses" in detect_sky_cycle().)
+    // AsianRule / YitianRule: check/chase alternation (一将一捉) is an allowed sequence.
+    // A check has already cleared that side's chase mask above, so against idle moves
+    // (or another alternating side) the scoring below gives a draw. Against a
+    // perpetual chaser the cycle is also a draw: the chaser is usually forced to keep
+    // blocking / attacking the checking piece, so it is not made to change alone.
+    // (SkyRule forbids the alternation in detect_sky_cycle(); ChineseRule returned
+    // above with its own classifier.)
     const bool mixedUs   = anyChk[us] && allChase[us];
     const bool mixedThem = anyChk[them] && allChase[them];
-    if (mixedUs != mixedThem)
-    {
-        if (mixedUs ? chase[them] : chase[us])
-            return VALUE_DRAW;  // 一将一捉 vs 长捉
-        return mixedThem ? mate_in(ply) : mated_in(ply);
-    }
-    if (mixedUs)
-        return VALUE_DRAW;
+    if (mixedUs != mixedThem && (mixedUs ? chase[them] : chase[us]))
+        return VALUE_DRAW;  // 一将一捉 vs 长捉
 
     if ((!chase[us] && !chase[them]) || (rooks[us] && rooks[them]))
         return VALUE_DRAW;
