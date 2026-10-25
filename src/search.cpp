@@ -738,7 +738,7 @@ bool Search::Worker::iterative_deepening() {
         // Above the Bare King threshold the shaped scores move at half the slope of
         // the real evaluation (captures add a fixed bonus that stays outside the
         // window), so in the combined mode the drop window is halved to keep the
-        // same 50..100 cp meaning in real evaluation.
+        // same 50..150 cp meaning in real evaluation.
         const bool shaped = Attack::bare_king(attackMode) && rootMoves[0].score >= Attack::Threshold;
         const int  minDropCp = shaped ? Attack::HumanMinDrop / 2 : Attack::HumanMinDrop;
         const int  maxDropCp = shaped ? Attack::HumanMaxDrop / 2 : Attack::HumanMaxDrop;
