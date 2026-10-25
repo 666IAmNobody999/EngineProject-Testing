@@ -49,10 +49,9 @@ namespace Stockfish {
 using namespace Attacks;
 
 namespace RuleConfig {
-// Defaults: YitianRule with rule150, Sixty Move Rule on.
-// AsianRule/SkyRule couple to rule120 and YitianRule couples to rule150;
-// the Sixty Move Rule stays on for all three (enforced in engine.cpp
-// couplings).
+// Defaults: SkyRule with rule120, Sixty Move Rule on.
+// AsianRule/SkyRule/ChineseRule/YitianRule all couple to rule120 and keep the
+// Sixty Move Rule on (enforced in engine.cpp couplings).
 RepetitionRule repetitionRule  = RepetitionRule::SKY;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 2;
@@ -1388,11 +1387,16 @@ ChaseMap Position::chased(Color c) {
             attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
                      | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
 
-        // Protected rooks chased by a knight/cannon count directly. ChineseRule and SkyRule
-        // additionally treat advisor/bishop attacks on stronger pieces as a chase.
-        // 天天象棋棋规【三】1：除车、兵外其他子捉车，无论车是否有根，算捉。
+        // Rooks chased regardless of protection.
+        // ChineseRule（天天象棋棋规【三】1）：除车、兵外其他子捉车，无论车是否有根，算捉。
+        // AsianRule（亚象联棋例总纲 6、细则 15/20/21/37）/ YitianRule（弈天规则 14）：
+        // 只有马或炮捉有根车仍算捉；士、象捉有真根之车属“长捉真根子作和”。
         // （车捉车走同类子路径；帅兵不在 attackers 之内。）
-        Bitboard candidates = attackerType != ROOK ? attacks & pieces(~sideToMove, ROOK) : 0;
+        Bitboard candidates =
+          (attackerType == KNIGHT || attackerType == CANNON
+           || (attackerType != ROOK && RuleConfig::repetitionRule == RuleConfig::RepetitionRule::CHINESE))
+            ? attacks & pieces(~sideToMove, ROOK)
+            : 0;
 
         attacks ^= candidates;
         while (candidates)
@@ -1826,43 +1830,23 @@ Value Position::detect_chases(int d, int ply) {
     ChaseMap newChase[COLOR_NB];                  // ChaseMap (victim, attacker) per side
     newChase[us] = chased(us);
 
-    // Check/chase alternation (一将一捉 / 一捉一将) tracking. A side is "mixed" when its
-    // cycle contains at least one check and every non-checking move creates a new
-    // chase (exact after-minus-before diff, so a standing attack is not a chase).
-    bool anyChk[COLOR_NB]   = {false, false};
-    bool allChase[COLOR_NB] = {true, true};
-
-    // Newly created chases of the move that leads to the current state, rolled back
-    // over it. Used only where the legacy scoring below no longer needs the move.
-    auto new_chase_step_back = [&](Color mover) {
-        ChaseMap after = chased(mover);
-        undo_move(st->move, st->capturedPiece);
-        st = st->previous;
-        ChaseMap before = chased(mover);
-        (void) (after & before);  // after -= before
-        return u16(after);
-    };
-
+    // AsianRule / YitianRule: 一将一捉 (check/chase alternation) is an allowed
+    // sequence, so a check simply ends that side's perpetual chase (chase mask
+    // cleared) and the side counts as allowed; the usual scoring below then gives
+    // a draw against an idle or alternating opponent and a loss for a perpetual
+    // chaser. Only SkyRule forbids the alternation, in detect_sky_cycle().
+    // 亚象联棋例总纲 2 / 细则 12：一照一捉作和；细则 18（图三十七）、23（图五十）：
+    // 对方一照一捉而己方长捉，长捉方不变作负。弈天规则 19、24 相同。
     for (int i = 0; i < d; ++i)
     {
         const Color mover = ~sideToMove;
 
-        if (st->checkersBB)
-            anyChk[mover] = true;
-
         if (!chase[mover])
         {
-            // Legacy scoring is settled for this side; the alternation test may still
-            // need to know whether this non-checking move is a chase.
-            if (!chase[sideToMove] && !allChase[WHITE] && !allChase[BLACK])
+            if (!chase[sideToMove])
                 break;
-            if (!st->checkersBB && allChase[mover])
-                allChase[mover] = new_chase_step_back(mover) != 0;
-            else
-            {
-                undo_move(st->move, st->capturedPiece);
-                st = st->previous;
-            }
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
         }
         else if (st->checkersBB
                  || (chineseRule && RuleConfig::mateThreatDepth > 0 && has_mate_threat()))
@@ -1870,13 +1854,8 @@ Value Position::detect_chases(int d, int ply) {
             // In Chinese-like rules, check/mate-threat is treated as chasing all pieces.
             chase[mover] &= chineseLike ? 0xFFFF : 0;
             rooks[mover] = 0;
-            if (!st->checkersBB && allChase[mover])
-                allChase[mover] = new_chase_step_back(mover) != 0;
-            else
-            {
-                undo_move(st->move, st->capturedPiece);
-                st = st->previous;
-            }
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
         }
         else
         {
@@ -1909,14 +1888,6 @@ Value Position::detect_chases(int d, int ply) {
             u16      chasesU16    = u16(chases);  // collapse to victim mask for accumulation
             newChase[sideToMove] = chased(sideToMove);
 
-            // Exact new chases of this move (after - before) for the alternation test.
-            if (allChase[sideToMove])
-            {
-                ChaseMap fresh = oldChase;
-                (void) (fresh & newChase[sideToMove]);
-                allChase[sideToMove] = u16(fresh) != 0;
-            }
-
             if (chineseLike)
             {
                 // Chinese-like rules recompute the diff against the updated newChase.
@@ -1924,25 +1895,23 @@ Value Position::detect_chases(int d, int ply) {
                 (void)(chases & newChase[sideToMove]);
                 chasesU16 = u16(chases);
             }
-            else if (i == d - 2)
-                chasesU16 &= ~u16(newChase[sideToMove]);
+            else
+            {
+                // AsianRule / YitianRule: a chase pair must also be created by this move
+                // (absent before it), not only end on the opponent's reply.
+                // 弈天规则 13：走子前不存在“捉”的状态，而走子后才造成“捉”的状态；
+                // 亚象联“长捉”：甲方连走捉着而乙方被捉之子每着逃避。
+                // An attack the opponent walked into (献着) is therefore not a chase.
+                (void)(chases & newChase[sideToMove]);
+                chasesU16 = u16(chases);
+                if (i == d - 2)
+                    chasesU16 &= ~u16(newChase[sideToMove]);
+            }
 
             rooks[sideToMove] &= chasesU16 & flag;
             chase[sideToMove] &= chineseLike && chasesU16 ? 0xFFFF : chasesU16;
         }
     }
-
-    // AsianRule / YitianRule: check/chase alternation (一将一捉) is an allowed sequence.
-    // A check has already cleared that side's chase mask above, so against idle moves
-    // (or another alternating side) the scoring below gives a draw. Against a
-    // perpetual chaser the cycle is also a draw: the chaser is usually forced to keep
-    // blocking / attacking the checking piece, so it is not made to change alone.
-    // (SkyRule forbids the alternation in detect_sky_cycle(); ChineseRule returned
-    // above with its own classifier.)
-    const bool mixedUs   = anyChk[us] && allChase[us];
-    const bool mixedThem = anyChk[them] && allChase[them];
-    if (mixedUs != mixedThem && (mixedUs ? chase[them] : chase[us]))
-        return VALUE_DRAW;  // 一将一捉 vs 长捉
 
     if ((!chase[us] && !chase[them]) || (rooks[us] && rooks[them]))
         return VALUE_DRAW;
@@ -2067,6 +2036,14 @@ bool Position::rule_judge(Value& result, int ply) {
     // Configurable natural-move rule (rule60Limit is RULE60_UNLIMITED when the
     // Sixty Move Rule is switched off, so this is a single compare per node).
     if (st->rule60 >= RuleConfig::rule60Limit)
+    {
+        result = MoveList<ALL>(*this).size() ? VALUE_DRAW : mated_in(ply);
+        apply_draw_rule(false);
+        return true;
+    }
+
+    // YitianRule 27：总步数（双方着法总数）达到 400 步判和；33：若一方被绝杀或困毙则不判和。
+    if (gamePly >= 400 && RuleConfig::repetitionRule == RuleConfig::RepetitionRule::YITIAN)
     {
         result = MoveList<ALL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         apply_draw_rule(false);

@@ -157,8 +157,9 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                                         : RR::ASIAN;
 
                  // Couplings for AsianRule, SkyRule, ChineseRule and YitianRule:
-                 // AsianRule/SkyRule/ChineseRule use rule120 and YitianRule uses rule150
-                 // (Rule60MaxPly stays freely adjustable 90-150), and the
+                 // all four rules use rule120 (弈天规则 26：无吃子着数达到 120 步判和；
+                 // 亚象联第四节：双方共走 120 步未有去子作和), Rule60MaxPly stays freely
+                 // adjustable 90-150, and the
                  // Sixty Move Rule is switched on for all three rules. The
                  // coupled options are assigned through the OptionsMap so that
                  // GUIs reflect the new defaults and the options' own callbacks
@@ -168,8 +169,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 					 || RuleConfig::repetitionRule == RR::CHINESE
                      || RuleConfig::repetitionRule == RR::YITIAN)
                  {
-                     const char* rule60Ply =
-                       RuleConfig::repetitionRule == RR::YITIAN ? "150" : "120";
+                     const char* rule60Ply = "120";
 
                      if (auto it = options.options_map.find("Rule60MaxPly");
                          it != options.options_map.end())
@@ -216,8 +216,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
-          // Defaults to rule120 for AsianRule/SkyRule and rule150 for
-          // YitianRule; freely adjustable between 90 and 150 plies.
+          // Defaults to rule120 for every rule; freely adjustable between
+          // 90 and 150 plies.
           RuleConfig::rule60MaxPly = int(o);
           RuleConfig::refresh_rule60();
           return std::nullopt;
