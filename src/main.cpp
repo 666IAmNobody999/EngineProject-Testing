@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << engine_info() << std::endl;
 
-    // Windows: "Ultimate Performance" power plan while the engine runs.
+    // Windows: "幻神终极效能" power plan while the engine runs.
     WinPerf::acquire_power_plan();
 
     Attacks::init();

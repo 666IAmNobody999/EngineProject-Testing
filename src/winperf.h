@@ -25,10 +25,11 @@
 //    memory priority "Normal" and dynamic thread priority boost enabled.
 //    Cheap enough to be re-applied before every search (GUIs may reset them).
 //  * acquire_power_plan() / release_power_plan(): switch Windows to the
-//    "Ultimate Performance" power plan while at least one engine instance is
-//    running and restore the user's previous plan when the last one exits.
-//    A tiny watcher process (the same executable started with
-//    --pikafish-power-watch <pid>) restores the plan even if the GUI kills the
+//    engine's "幻神终极效能" power plan (Bitsum Highest Performance settings:
+//    core parking off, processor state 100%, P-cores preferred) while at least
+//    one engine instance is running and restore the user's previous plan when the last one exits.
+//    A tiny watcher process at CPU priority "Idle" (the same executable started
+//    with --pikafish-power-watch <pid>) restores the plan even if the GUI kills the
 //    engine instead of sending "quit".
 //  * run_power_watcher(): returns true when this process is such a watcher;
 //    main() must then return immediately.

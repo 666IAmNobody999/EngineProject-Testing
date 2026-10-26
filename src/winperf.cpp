@@ -103,9 +103,42 @@ using PowerSetActiveSchemeFn  = DWORD(WINAPI*)(HKEY, const GUID*);
 using PowerEnumerateFn        = DWORD(WINAPI*)(HKEY, const GUID*, const GUID*, int, ULONG, UCHAR*, DWORD*);
 using PowerReadFriendlyNameFn = DWORD(WINAPI*)(HKEY, const GUID*, const GUID*, const GUID*, UCHAR*, DWORD*);
 using PowerDuplicateSchemeFn  = DWORD(WINAPI*)(HKEY, const GUID*, GUID**);
+using PowerWriteFriendlyNameFn = DWORD(WINAPI*)(HKEY, const GUID*, const GUID*, const GUID*, UCHAR*, DWORD);
+using PowerWriteValueIndexFn   = DWORD(WINAPI*)(HKEY, const GUID*, const GUID*, const GUID*, DWORD);
 
-constexpr int  AccessScheme  = 16;  // POWER_DATA_ACCESSOR::ACCESS_SCHEME
-constexpr GUID UltimateGuid  = {0xe9a42b02, 0xd5df, 0x448d, {0xaa, 0x00, 0x03, 0xf1, 0x47, 0x49, 0xeb, 0x61}};
+constexpr int  AccessScheme = 16;  // POWER_DATA_ACCESSOR::ACCESS_SCHEME
+constexpr GUID UltimateGuid = {0xe9a42b02, 0xd5df, 0x448d, {0xaa, 0x00, 0x03, 0xf1, 0x47, 0x49, 0xeb, 0x61}};
+constexpr GUID HighPerfGuid = {0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
+
+// Name of the engine's own power plan.
+constexpr wchar_t PlanName[] = L"\u5E7B\u795E\u7EC8\u6781\u6548\u80FD";  // 幻神终极效能
+// Bitsum Highest Performance (installed by Process Lasso / ParkControl) is
+// copied when present; it is never modified or renamed, so Process Lasso keeps
+// finding it.
+constexpr wchar_t BitsumName[] = L"Bitsum Highest Performance";
+
+// Processor settings of Bitsum Highest Performance, applied to the plan on
+// both AC and DC (https://bitsum.com/bhp/: core parking off, CPU never below
+// its base frequency; Process Lasso changelog: prefer P-cores for short and
+// long running threads). Settings missing on a CPU (e.g. no hybrid cores) are
+// skipped by Windows.
+constexpr GUID SubProcessor = {0x54533251, 0x82be, 0x4824, {0x96, 0xc1, 0x47, 0xb6, 0x0b, 0x74, 0x0d, 0x00}};
+struct PlanSetting {
+    GUID  setting;
+    DWORD value;
+};
+constexpr PlanSetting PlanSettings[] = {
+  {{0x0cc5b647, 0xc1df, 0x4637, {0x89, 0x1a, 0xde, 0xc3, 0x5c, 0x31, 0x85, 0x84}}, 100},  // CPMINCORES
+  {{0x0cc5b647, 0xc1df, 0x4637, {0x89, 0x1a, 0xde, 0xc3, 0x5c, 0x31, 0x85, 0x85}}, 100},  // CPMINCORES1
+  {{0xea062031, 0x0e34, 0x4ff1, {0x9b, 0x6d, 0xeb, 0x10, 0x59, 0x33, 0x40, 0x28}}, 100},  // CPMAXCORES
+  {{0xea062031, 0x0e34, 0x4ff1, {0x9b, 0x6d, 0xeb, 0x10, 0x59, 0x33, 0x40, 0x29}}, 100},  // CPMAXCORES1
+  {{0x893dee8e, 0x2bef, 0x41e0, {0x89, 0xc6, 0xb5, 0x5d, 0x09, 0x29, 0x96, 0x4c}}, 100},  // PROCTHROTTLEMIN
+  {{0x893dee8e, 0x2bef, 0x41e0, {0x89, 0xc6, 0xb5, 0x5d, 0x09, 0x29, 0x96, 0x4d}}, 100},  // PROCTHROTTLEMIN1
+  {{0xbc5038f7, 0x23e0, 0x4960, {0x96, 0xda, 0x33, 0xab, 0xaf, 0x59, 0x35, 0xec}}, 100},  // PROCTHROTTLEMAX
+  {{0xbc5038f7, 0x23e0, 0x4960, {0x96, 0xda, 0x33, 0xab, 0xaf, 0x59, 0x35, 0xed}}, 100},  // PROCTHROTTLEMAX1
+  {{0x93b8b6dc, 0x0698, 0x4d1c, {0x9e, 0xe4, 0x06, 0x44, 0xe9, 0x00, 0xc8, 0x5d}}, 2},    // SCHEDPOLICY: prefer performant
+  {{0xbae08b81, 0x2d5e, 0x4688, {0xad, 0x6a, 0x13, 0x24, 0x33, 0x56, 0x65, 0x4b}}, 2},    // SHORTSCHEDPOLICY
+};
 constexpr char WatchSwitch[] = "--pikafish-power-watch";
 
 struct PowerApi {
@@ -114,6 +147,9 @@ struct PowerApi {
     PowerEnumerateFn        enumerate = load<PowerEnumerateFn>(L"powrprof.dll", "PowerEnumerate");
     PowerReadFriendlyNameFn readName  = load<PowerReadFriendlyNameFn>(L"powrprof.dll", "PowerReadFriendlyName");
     PowerDuplicateSchemeFn  duplicate = load<PowerDuplicateSchemeFn>(L"powrprof.dll", "PowerDuplicateScheme");
+    PowerWriteFriendlyNameFn writeName = load<PowerWriteFriendlyNameFn>(L"powrprof.dll", "PowerWriteFriendlyName");
+    PowerWriteValueIndexFn   writeAC   = load<PowerWriteValueIndexFn>(L"powrprof.dll", "PowerWriteACValueIndex");
+    PowerWriteValueIndexFn   writeDC   = load<PowerWriteValueIndexFn>(L"powrprof.dll", "PowerWriteDCValueIndex");
 
     bool ok() const { return getActive && setActive && enumerate; }
 };
@@ -164,12 +200,12 @@ std::wstring data_dir() {
     return dir + L'\\';
 }
 
-// GUID of the Ultimate Performance copy created by the engine on an earlier run
-// (kept so that a hidden template is duplicated only once per machine).
-std::wstring created_scheme_file() { return data_dir() + L"ultimate_scheme.guid"; }
+// GUID of the plan created by the engine (kept so that it is created only once).
+std::wstring created_scheme_file() { return data_dir() + L"power_plan.guid"; }
 std::wstring state_file() { return data_dir() + L"powerplan.state"; }
 
-bool scheme_exists(const GUID& g) {
+template<typename Fn>
+bool for_each_scheme(Fn fn) {
     for (ULONG i = 0;; ++i)
     {
         GUID  s{};
@@ -177,72 +213,87 @@ bool scheme_exists(const GUID& g) {
         if (power().enumerate(nullptr, nullptr, nullptr, AccessScheme, i, reinterpret_cast<UCHAR*>(&s), &size)
             != ERROR_SUCCESS)
             return false;
-        if (same(s, g))
+        if (fn(s))
             return true;
     }
 }
 
-// Finds the "Ultimate Performance" plan, creating it from the built-in template
-// when Windows keeps it hidden (the default on most non-workstation editions).
-bool find_ultimate(GUID& out) {
-    // 1. The template itself is visible (Pro for Workstations, or user-unhidden).
-    if (scheme_exists(UltimateGuid))
-    {
-        out = UltimateGuid;
-        return true;
-    }
+bool scheme_exists(const GUID& g) {
+    return for_each_scheme([&](const GUID& s) { return same(s, g); });
+}
 
-    // 2. A copy this engine created before.
+bool scheme_named(const wchar_t* name, GUID& out) {
+    return for_each_scheme([&](const GUID& s) {
+        if (friendly_name(s) != name)
+            return false;
+        out = s;
+        return true;
+    });
+}
+
+bool duplicate_scheme(const GUID& source, GUID& out) {
+    GUID* dup = nullptr;
+    if (!power().duplicate || power().duplicate(nullptr, &source, &dup) != ERROR_SUCCESS || !dup)
+        return false;
+    out = *dup;
+    LocalFree(dup);
+    return true;
+}
+
+// Applies the Bitsum Highest Performance processor settings (idempotent).
+void configure_plan(const GUID& plan) {
+    for (const auto& ps : PlanSettings)
+    {
+        if (power().writeAC)
+            power().writeAC(nullptr, &plan, &SubProcessor, &ps.setting, ps.value);
+        if (power().writeDC)
+            power().writeDC(nullptr, &plan, &SubProcessor, &ps.setting, ps.value);
+    }
+}
+
+// Finds the engine's "幻神终极效能" plan, creating it once when missing: a copy
+// of Bitsum Highest Performance if installed, else of the (possibly hidden)
+// Ultimate Performance template, else of High Performance. The Bitsum settings
+// are (re-)applied on every start.
+bool find_power_plan(GUID& out) {
     std::wstring createdFile = created_scheme_file();
+    bool         found       = false;
     {
         std::ifstream f(createdFile.c_str(), std::ios::binary);
         GUID          g{};
         if (f.read(reinterpret_cast<char*>(&g), sizeof(g)) && scheme_exists(g))
         {
-            out = g;
-            return true;
+            out   = g;
+            found = true;
         }
     }
+    if (!found)
+        found = scheme_named(PlanName, out);
 
-    // 3. A copy the user created (powercfg -duplicatescheme), found by name.
-    std::vector<std::wstring> names = {L"Ultimate Performance",
-                                       L"\u7D42\u6975\u6548\u80FD",  // 終極效能
-                                       L"\u5353\u8D8A\u6027\u80FD",  // 卓越性能
-                                       L"\u7A76\u6975\u306E\u30D1\u30D5\u30A9\u30FC\u30DE\u30F3\u30B9"};
-    std::wstring templateName = friendly_name(UltimateGuid);
-    if (!templateName.empty())
-        names.push_back(templateName);
-
-    for (ULONG i = 0;; ++i)
+    if (!found)
     {
-        GUID  s{};
-        DWORD size = sizeof(s);
-        if (power().enumerate(nullptr, nullptr, nullptr, AccessScheme, i, reinterpret_cast<UCHAR*>(&s), &size)
-            != ERROR_SUCCESS)
-            break;
-        std::wstring name = friendly_name(s);
-        for (const auto& n : names)
-            if (name == n)
-            {
-                out = s;
-                return true;
-            }
+        GUID bitsum{};
+        if (!(scheme_named(BitsumName, bitsum) && duplicate_scheme(bitsum, out))
+            && !duplicate_scheme(UltimateGuid, out) && !duplicate_scheme(HighPerfGuid, out))
+            return false;
+
+        if (power().writeName)
+        {
+            std::wstring name(PlanName);
+            power().writeName(nullptr, &out, nullptr, nullptr, reinterpret_cast<UCHAR*>(name.data()),
+                              DWORD((name.size() + 1) * sizeof(wchar_t)));
+        }
+        std::ofstream f(createdFile.c_str(), std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(&out), sizeof(out));
     }
 
-    // 4. Create it once from the hidden template.
-    GUID* dup = nullptr;
-    if (!power().duplicate || power().duplicate(nullptr, &UltimateGuid, &dup) != ERROR_SUCCESS || !dup)
-        return false;
-    out = *dup;
-    LocalFree(dup);
-    std::ofstream f(createdFile.c_str(), std::ios::binary | std::ios::trunc);
-    f.write(reinterpret_cast<const char*>(&out), sizeof(out));
+    configure_plan(out);
     return true;
 }
 
 // Shared state of all running engine instances (several engines may run at the
 // same time, e.g. in an engine match): the plan to restore and the processes
-// still using the Ultimate Performance plan. Guarded by a named mutex.
+// still using the engine's power plan. Guarded by a named mutex.
 struct Instance {
     DWORD    pid;
     FILETIME created;
@@ -250,7 +301,7 @@ struct Instance {
 
 struct State {
     GUID                  original{};
-    GUID                  ultimate{};
+    GUID                  ultimate{};  // the engine's plan
     std::uint32_t         switched = 0;  // the engine changed the plan and must restore it
     std::vector<Instance> instances;
 };
@@ -376,7 +427,8 @@ void spawn_watcher(DWORD pid) {
     // No inherited handles: the watcher must not keep the GUI's pipes open.
     // Break away from the GUI's job object when allowed, so that killing the
     // engine's job does not take the watcher with it.
-    DWORD flags = CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS;
+    // CPU priority "Idle": the watcher only sleeps until the engine exits.
+    DWORD flags = CREATE_NO_WINDOW | IDLE_PRIORITY_CLASS;
     for (DWORD extra : {DWORD(CREATE_BREAKAWAY_FROM_JOB), DWORD(0)})
     {
         STARTUPINFOW        si{};
@@ -470,7 +522,7 @@ void acquire_power_plan() {
         if (s.instances.empty())
         {
             GUID cur{}, ult{};
-            if (!active_scheme(cur) || !find_ultimate(ult))
+            if (!active_scheme(cur) || !find_power_plan(ult))
                 return;
 
             // Every engine was killed before it could restore (and its watcher
@@ -483,6 +535,8 @@ void acquire_power_plan() {
                 s.ultimate = ult;
                 s.switched = !same(cur, ult) && power().setActive(nullptr, &ult) == ERROR_SUCCESS;
             }
+            if (same(cur, ult))
+                power().setActive(nullptr, &ult);  // re-activate so the refreshed settings apply
         }
 
         s.instances.push_back(self);
@@ -503,6 +557,9 @@ void release_power_plan() {
 bool run_power_watcher(int argc, char* argv[]) {
     if (argc < 3 || std::strcmp(argv[1], WatchSwitch) != 0)
         return false;
+
+    // Keep the watcher at "Idle" even if it was started some other way.
+    SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
 
     DWORD pid = DWORD(std::strtoul(argv[2], nullptr, 10));
     if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid))
