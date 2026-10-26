@@ -25,6 +25,7 @@
 #include "position.h"
 #include "tune.h"
 #include "uci.h"
+#include "winperf.h"
 
 using namespace Stockfish;
 
@@ -37,7 +38,15 @@ __attribute__((used))  // keep main alive
 #endif
 
 int main(int argc, char* argv[]) {
+    // Windows: a helper started by acquire_power_plan() only waits for its engine
+    // to exit and then restores the previous power plan.
+    if (WinPerf::run_power_watcher(argc, argv))
+        return 0;
+
     std::cout << engine_info() << std::endl;
+
+    // Windows: "Ultimate Performance" power plan while the engine runs.
+    WinPerf::acquire_power_plan();
 
     Attacks::init();
     Position::init();
@@ -49,6 +58,7 @@ int main(int argc, char* argv[]) {
 
     uci->loop();
 
+    WinPerf::release_power_plan();
     return 0;
 }
 

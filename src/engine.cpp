@@ -41,34 +41,20 @@
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
-
-#if defined(_WIN32)
-    #if !defined(NOMINMAX)
-        #define NOMINMAX
-    #endif
-    #if !defined(WIN32_LEAN_AND_MEAN)
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #include <windows.h>
-#endif
+#include "winperf.h"
 
 namespace Stockfish {
 
 namespace {
 
-// Forces the process priority class to "Above Normal" (Windows only). GUIs
-// usually create the engine with their own priority setting, and some of them
-// re-apply it later, so this is called both at start-up and before every
+// Windows process tuning (CPU priority "Above Normal", I/O priority "High",
+// memory priority "Normal", dynamic thread priority boost on); see winperf.h.
+// GUIs usually create the engine with their own priority setting, and some of
+// them re-apply it later, so this is called both at start-up and before every
 // search; the last writer wins and the engine makes sure it is the last one.
 // On non-Windows platforms raising priority needs elevated rights, so it is a
 // no-op there.
-void force_process_priority() {
-#if defined(_WIN32)
-    HANDLE proc = GetCurrentProcess();
-    if (GetPriorityClass(proc) != ABOVE_NORMAL_PRIORITY_CLASS)
-        SetPriorityClass(proc, ABOVE_NORMAL_PRIORITY_CLASS);
-#endif
-}
+void force_process_priority() { WinPerf::apply_process_tuning(); }
 
 // EvalFile is a combo option; map its (case-insensitive) value to the exact
 // net file name. Anything unexpected falls back to the default net.
@@ -134,7 +120,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     // of Bare King live in the transposition table, so switching modes clears it.
     options.add(  //
       "Attack Mode",
-      Option("BareKing var BestMove var BareKing var HumanLike var HumanLikeBareKing var ForcedDraw",
+      Option("BestMove var BestMove var BareKing var HumanLike var HumanLikeBareKing var ForcedDraw",
              "BestMove",
              [this](const Option&) {
                  search_clear();
