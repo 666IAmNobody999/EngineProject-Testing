@@ -38,7 +38,7 @@
 
 #if defined(NNUE_EMBEDDING)
 // Defined in nnue/embedded_nets.S (only assembled with embed=yes, the default for
-// COMP=ndk). The symbols are global and outside any namespace so that every slice
+// COMP=ndk and Windows). The symbols are global and outside any namespace so that every slice
 // of a universal binary shares one copy of the nets.
 extern "C" {
 extern const unsigned char pikafish_embedded_net_main[];

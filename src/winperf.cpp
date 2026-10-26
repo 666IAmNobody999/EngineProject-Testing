@@ -18,6 +18,30 @@
 
 #include "winperf.h"
 
+#include <algorithm>
+
+namespace Stockfish::WinPerf {
+
+std::vector<int> select_physical_cores(std::vector<PhysicalCore> cores, std::size_t threads) {
+    if (threads == 0 || threads > cores.size())
+        return {};
+
+    std::stable_sort(cores.begin(), cores.end(), [](const PhysicalCore& x, const PhysicalCore& y) {
+        if (x.efficiencyClass != y.efficiencyClass)
+            return x.efficiencyClass > y.efficiencyClass;
+        if (x.hasCpu0 != y.hasCpu0)
+            return y.hasCpu0;
+        return x.firstCpu < y.firstCpu;
+    });
+
+    std::vector<int> pins;
+    for (std::size_t i = 0; i < threads; ++i)
+        pins.push_back(cores[i].firstCpu);
+    return pins;
+}
+
+}  // namespace Stockfish::WinPerf
+
 #if !defined(_WIN32)
 
 namespace Stockfish::WinPerf {
@@ -26,6 +50,9 @@ void apply_process_tuning() {}
 void acquire_power_plan() {}
 void release_power_plan() {}
 bool run_power_watcher(int, char*[]) { return false; }
+void idle_other_pikafish() {}
+std::vector<int> plan_physical_core_pins(std::size_t) { return {}; }
+bool             pin_current_thread(int) { return false; }
 
 }  // namespace Stockfish::WinPerf
 
@@ -38,8 +65,10 @@ bool run_power_watcher(int, char*[]) { return false; }
         #define WIN32_LEAN_AND_MEAN
     #endif
     #include <windows.h>
+    #include <tlhelp32.h>
 
     #include <atomic>
+    #include <cwctype>
     #include <cstdint>
     #include <cstdlib>
     #include <cstring>
@@ -459,9 +488,9 @@ BOOL WINAPI console_handler(DWORD type) {
 void apply_process_tuning() {
     HANDLE proc = GetCurrentProcess();
 
-    // 1. CPU priority: Above Normal.
-    if (GetPriorityClass(proc) != ABOVE_NORMAL_PRIORITY_CLASS)
-        SetPriorityClass(proc, ABOVE_NORMAL_PRIORITY_CLASS);
+    // 1. CPU priority: High.
+    if (GetPriorityClass(proc) != HIGH_PRIORITY_CLASS)
+        SetPriorityClass(proc, HIGH_PRIORITY_CLASS);
 
     // 2. Dynamic thread priority boost on (FALSE = boost not disabled).
     BOOL boostDisabled = FALSE;
@@ -569,6 +598,139 @@ bool run_power_watcher(int argc, char* argv[]) {
     }
     release_instance(pid);
     return true;
+}
+
+namespace {
+
+std::wstring lower(std::wstring s) {
+    for (auto& c : s)
+        c = wchar_t(std::towlower(c));
+    return s;
+}
+
+std::wstring image_path(HANDLE proc) {
+    std::vector<wchar_t> buf(32768);
+    DWORD                size = DWORD(buf.size());
+    if (!QueryFullProcessImageNameW(proc, 0, buf.data(), &size))
+        return {};
+    return lower(std::wstring(buf.data(), size));
+}
+
+// TOKEN_USER of a process (owner SID), empty on failure.
+std::vector<BYTE> token_user(HANDLE proc) {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(proc, TOKEN_QUERY, &token))
+        return {};
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    std::vector<BYTE> buf(size);
+    if (!size || !GetTokenInformation(token, TokenUser, buf.data(), size, &size))
+        buf.clear();
+    CloseHandle(token);
+    return buf;
+}
+
+bool same_user(const std::vector<BYTE>& a, const std::vector<BYTE>& b) {
+    return !a.empty() && !b.empty()
+        && EqualSid(reinterpret_cast<const TOKEN_USER*>(a.data())->User.Sid,
+                    reinterpret_cast<const TOKEN_USER*>(b.data())->User.Sid);
+}
+
+}  // namespace
+
+void idle_other_pikafish() {
+    const DWORD             selfPid  = GetCurrentProcessId();
+    const std::wstring      selfPath = image_path(GetCurrentProcess());
+    const std::vector<BYTE> selfUser = token_user(GetCurrentProcess());
+    if (selfPath.empty() || selfUser.empty())
+        return;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return;
+
+    PROCESSENTRY32W e{};
+    e.dwSize = sizeof(e);
+    for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e))
+    {
+        if (e.th32ProcessID == selfPid || lower(e.szExeFile).find(L"pikafish") == std::wstring::npos)
+            continue;
+
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION, FALSE,
+                               e.th32ProcessID);
+        if (!h)
+            continue;  // other users / protected processes are never touched
+
+        // Same user only; copies of this very executable (other instances of
+        // this engine and its own watchers) are left alone.
+        if (same_user(token_user(h), selfUser) && image_path(h) != selfPath
+            && GetPriorityClass(h) != IDLE_PRIORITY_CLASS)
+            SetPriorityClass(h, IDLE_PRIORITY_CLASS);
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+}
+
+std::vector<int> plan_physical_core_pins(std::size_t threads) {
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0)
+        return {};
+    std::vector<char> buf(len);
+    auto* base = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, base, &len))
+        return {};
+
+    // A process living in a single processor group (the usual case) can only
+    // run on its affinity mask; on multi-group systems every group is usable.
+    bool      filter = false;
+    USHORT    procGroup = 0;
+    DWORD_PTR procMask = 0, sysMask = 0;
+    {
+        USHORT groups[64];
+        USHORT count = 64;
+        if (GetProcessGroupAffinity(GetCurrentProcess(), &count, groups) && count == 1
+            && GetProcessAffinityMask(GetCurrentProcess(), &procMask, &sysMask))
+        {
+            filter    = true;
+            procGroup = groups[0];
+        }
+    }
+
+    std::vector<PhysicalCore> cores;
+    for (DWORD off = 0; off < len;)
+    {
+        auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + off);
+        if (info->Size == 0)
+            break;
+        off += info->Size;
+        if (info->Relationship != RelationProcessorCore || info->Processor.GroupCount == 0)
+            continue;
+
+        const GROUP_AFFINITY& ga   = info->Processor.GroupMask[0];
+        KAFFINITY             mask = ga.Mask;
+        if (filter)
+            mask = ga.Group == procGroup ? mask & KAFFINITY(procMask) : 0;
+        if (!mask)
+            continue;
+
+        int bit = 0;
+        while (!((mask >> bit) & 1))
+            ++bit;
+        cores.push_back({int(info->Processor.EfficiencyClass), int(ga.Group) * 64 + bit,
+                         ga.Group == 0 && (ga.Mask & 1)});
+    }
+
+    return select_physical_cores(std::move(cores), threads);
+}
+
+bool pin_current_thread(int cpu) {
+    if (cpu < 0)
+        return false;
+    GROUP_AFFINITY ga{};
+    ga.Group = WORD(cpu / 64);
+    ga.Mask  = KAFFINITY(1) << (cpu % 64);
+    return SetThreadGroupAffinity(GetCurrentThread(), &ga, nullptr) != 0;
 }
 
 }  // namespace Stockfish::WinPerf

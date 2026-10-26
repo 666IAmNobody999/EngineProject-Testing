@@ -14,18 +14,16 @@ jobs:
     env:
       ARCH: x86-64-universal
       COMP: clang
-      EXE: Pikafish-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
-      # Private network used only for the PGO training run (never shipped; the
-      # Windows / Linux binaries do not embed the net, only Android does).
+      # Released file name. The build itself uses an ASCII name (pikafish-build*)
+      # so that make, Intel SDE and the PGO bench never see a non-ASCII path.
+      EXE: 幻神引擎-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
+      # (not shipped); Windows embeds pikafish.nnue + pikafish_zero_test.nnue in
+      # the binary (Makefile embed=yes, the default for Windows), like Android.
       NET_REPO: ${{ vars.NET_REPO }}
       NET_TAG: ${{ vars.NET_TAG }}
       NET_SHA256: ${{ vars.NET_SHA256 }}
     strategy:
       matrix:
-        config:
-          - name: Linux
-            os: ubuntu-24.04
-            shell: bash
           - name: Windows
             os: windows-latest
             shell: msys2 {0}
@@ -38,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download private network for PGO
+      - name: Download private networks
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.NET_TOKEN }}
@@ -47,11 +45,17 @@ jobs:
             echo "::error::NET_TOKEN secret, NET_REPO and NET_TAG variables are required for the PGO build."
             exit 1
           fi
-          gh release download "$NET_TAG" --repo "$NET_REPO" --pattern pikafish.nnue --dir . --clobber
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            NETS="pikafish.nnue pikafish_zero_test.nnue"   # embedded in the binary
+          else
+            NETS="pikafish.nnue"                           # PGO training run only
+          fi
+          gh release download "$NET_TAG" --repo "$NET_REPO" \
+            $(for n in $NETS; do printf -- '--pattern %s ' "$n"; done) --dir . --clobber
           if [ -n "$NET_SHA256" ]; then
             echo "$NET_SHA256  pikafish.nnue" | sha256sum -c -
           fi
-          ls -l pikafish.nnue
+          ls -l $NETS
 
       - name: Setup msys and install required packages
         if: runner.os == 'Windows'
@@ -88,41 +92,15 @@ jobs:
           else
             SDE="$SDE_PATH/sde64"
           fi
-          make -j4 profile-build EXE=$EXE RUN_PREFIX="$SDE -future --"
-          make strip EXE=$EXE
-          cp $EXE ../
+          BUILD=pikafish-build${{ matrix.config.ext }}
+          make -j4 profile-build EXE=$BUILD RUN_PREFIX="$SDE -future --"
+          make strip EXE=$BUILD
+          cp "$BUILD" "../$EXE"
 
-      - name: Remove private network
+      - name: Remove private networks
         if: always()
         shell: bash
-        run: rm -rf pikafish.nnue temp_builds
-
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.EXE }}
-          path: ${{ env.EXE }}
-
-  Pikafish-MacOS:
-    name: MacOS-universal
-    runs-on: macos-latest
-    env:
-      COMP: clang
-      EXE: Pikafish-MacOS-universal
-    defaults:
-      run:
-        working-directory: src
-        shell: bash
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Compile universal build
-        run: |
-          make -j3 macos-lipo EXE=$EXE
-          make strip EXE=$EXE
-          cp $EXE ../
+        run: rm -rf pikafish.nnue pikafish_zero_test.nnue temp_builds
 
       # Artifacts automatically get zipped.
       # To avoid double-zipping, we use the unzipped directory
@@ -148,7 +126,7 @@ jobs:
     env:
       ARCH: ${{ matrix.config.arch }}-universal
       COMP: ndk
-      EXE: Pikafish-Android-${{ matrix.config.arch }}-universal
+      EXE: 幻神引擎-Android-${{ matrix.config.arch }}-universal
       LDFLAGS: "-static -Wno-unused-command-line-argument"
       NET_REPO: ${{ vars.NET_REPO }}
       NET_TAG: ${{ vars.NET_TAG }}
@@ -206,9 +184,9 @@ jobs:
           else
             PREFIX="$SDE_PATH/sde64 -future --"
           fi
-          make -j4 profile-build EXE=$EXE RUN_PREFIX="$PREFIX"
-          make strip EXE=$EXE
-          cp $EXE ../
+          make -j4 profile-build EXE=pikafish-build RUN_PREFIX="$PREFIX"
+          make strip EXE=pikafish-build
+          cp pikafish-build "../$EXE"
 
       - name: Remove private networks
         if: always()
@@ -231,11 +209,11 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: Pikafish-*
+          pattern: 幻神引擎-*
           path: Artifacts
 
       - name: Put binaries into release root
-        run: cp Artifacts/Pikafish-*/* .
+        run: cp Artifacts/幻神引擎-*/* .
 
       - name: Download wiki
         run: |
@@ -247,9 +225,9 @@ jobs:
       # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v7
         with:
-          name: Pikafish
+          name: 幻神引擎
           path: |
-            Pikafish-*
+            幻神引擎-*
             Wiki
             AUTHORS
             CONTRIBUTING.md
@@ -269,7 +247,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: Pikafish
+          name: 幻神引擎
           path: release
 
       - name: Install 7-Zip
@@ -278,7 +256,7 @@ jobs:
       - name: Package release archive
         run: |
           VERSION="${GITHUB_REF_NAME#Pikafish-}"
-          (cd release && 7z a "../Pikafish.${VERSION}.7z" ./*)
+          (cd release && 7z a "../幻神引擎.${VERSION}.7z" ./*)
 
       - name: Create draft release
         env:
@@ -286,13 +264,13 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#Pikafish-}"
           if gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" "Pikafish.${VERSION}.7z" \
+            gh release upload "${GITHUB_REF_NAME}" "幻神引擎.${VERSION}.7z" \
               --repo "${{ github.repository }}" --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
               --repo "${{ github.repository }}" \
               --draft \
-              --title "Pikafish ${VERSION}" \
+              --title "幻神引擎 ${VERSION}" \
               --generate-notes \
-              "Pikafish.${VERSION}.7z"
+              "幻神引擎.${VERSION}.7z"
           fi

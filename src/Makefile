@@ -32,14 +32,6 @@ ifeq ($(COMP),ndk)
 	OS := Android
 endif
 
-### Embed the NNUE nets (pikafish.nnue + pikafish_zero_test.nnue) in the binary.
-### Default: yes for Android (COMP=ndk), no for every other target.
-ifeq ($(COMP),ndk)
-	embed ?= yes
-else
-	embed ?= no
-endif
-
 ### Command prefix to run the built executable (e.g. wine, sde, qemu)
 ### Backward compatible alias: WINE_PATH (deprecated)
 ifneq ($(strip $(WINE_PATH)),)
@@ -65,6 +57,16 @@ else ifeq ($(COMP),mingw)
 	ifeq ($(RUN_PREFIX),)
 		RUN_PREFIX := $(shell which wine)
 	endif
+endif
+
+### Embed the NNUE nets (pikafish.nnue + pikafish_zero_test.nnue) in the binary.
+### Default: yes for Android (COMP=ndk) and Windows, no for every other target.
+ifeq ($(COMP),ndk)
+	embed ?= yes
+else ifeq ($(target_windows),yes)
+	embed ?= yes
+else
+	embed ?= no
 endif
 
 ### Executable name
@@ -100,7 +102,7 @@ VPATH = $(shell find -L . \( -path './universal' -o -path './temp_builds' \) -pr
 # ----------------------------------------------------------------------------
 #
 # debug = yes/no      --- -DNDEBUG           --- Enable/Disable debug mode
-# embed = yes/no      --- -DNNUE_EMBEDDING   --- Embed both nets (default yes for COMP=ndk)
+# embed = yes/no      --- -DNNUE_EMBEDDING   --- Embed both nets (default yes for COMP=ndk and Windows)
 # sanitize = none/<sanitizer> ... (-fsanitize )
 #                     --- ( undefined )      --- enable undefined behavior checks
 #                     --- ( thread    )      --- enable threading error checks
@@ -1495,7 +1497,7 @@ $(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
 	@mkdir -p $(TEMP_DIR)/$*
 	@$(foreach f,$(TRACKED_TOP),ln -s $(CURDIR)/$(f) $(TEMP_DIR)/$*/$(f);)
 # The nets are symlinked into every slice: the PGO bench loads pikafish.nnue from the
-# working directory, and with embed=yes (Android) nnue/embedded_nets.S .incbin's both.
+# working directory, and with embed=yes (Android, Windows) nnue/embedded_nets.S .incbin's both.
 	@$(foreach f,$(EMBED_NETS),if [ -f $(CURDIR)/$(f) ]; then ln -sf $(CURDIR)/$(f) $(TEMP_DIR)/$*/$(f); fi;)
 	@touch $@
 

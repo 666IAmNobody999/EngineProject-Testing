@@ -40,6 +40,7 @@
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
+#include "winperf.h"
 
 namespace Stockfish {
 
@@ -165,6 +166,7 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
         threads.clear();
 
         boundThreadToNumaNode.clear();
+        corePins.clear();
     }
 
     const usize requested = sharedState.options["Threads"];
@@ -244,6 +246,21 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
                 numaConfig.execute_on_numa_node(numaId, create_thread);
             else
                 create_thread();
+        }
+
+        // Windows: when the threads fit on the physical cores, hard-bind each one
+        // to its own core (one logical processor per core, so no two search
+        // threads share a core through SMT). Only with the default NumaPolicy
+        // "auto" when no NUMA binding is in use; "none" disables it.
+        if (numaPolicy == "auto" && !doBindThreads)
+        {
+            corePins = WinPerf::plan_physical_core_pins(requested);
+            for (usize i = 0; i < corePins.size(); ++i)
+            {
+                const int cpu = corePins[i];
+                threads[i]->run_custom_job([cpu]() { WinPerf::pin_current_thread(cpu); });
+                threads[i]->wait_for_search_finished();
+            }
         }
 
         clear();

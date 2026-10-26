@@ -83,6 +83,8 @@ class Engine {
     void set_tt_size(usize mb);
     void set_ponderhit(bool);
     void search_clear();
+    // Windows: CPU priority "Idle" for other Pikafish processes.
+    void idle_other_pikafish() const;
 
     void set_on_update_no_moves(std::function<void(const InfoShort&)>&&);
     void set_on_update_full(std::function<void(const InfoFull&)>&&);

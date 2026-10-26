@@ -47,7 +47,7 @@ namespace Stockfish {
 
 namespace {
 
-// Windows process tuning (CPU priority "Above Normal", I/O priority "High",
+// Windows process tuning (CPU priority "High", I/O priority "High",
 // memory priority "Normal", dynamic thread priority boost on); see winperf.h.
 // GUIs usually create the engine with their own priority setting, and some of
 // them re-apply it later, so this is called both at start-up and before every
@@ -261,6 +261,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     RuleConfig::refresh_rule60();
 
     force_process_priority();
+    idle_other_pikafish();
 
     threads.clear();
     threads.ensure_network_replicated();
@@ -282,8 +283,13 @@ void Engine::go(Search::LimitsType& limits) {
 }
 void Engine::stop() { threads.stop = true; }
 
+// Windows: other processes whose name contains "pikafish" (same user, not this
+// executable) get CPU priority "Idle"; called at start-up, isready and ucinewgame.
+void Engine::idle_other_pikafish() const { WinPerf::idle_other_pikafish(); }
+
 void Engine::search_clear() {
     wait_for_search_finished();
+    idle_other_pikafish();
 
     tt.clear(threads);
     threads.clear();
@@ -513,6 +519,15 @@ std::string Engine::thread_allocation_information_as_string() const {
 
     usize threadsSize = threads.size();
     ss << "Using " << threadsSize << (threadsSize > 1 ? " threads" : " thread");
+
+    const auto& pins = threads.get_core_pins();
+    if (!pins.empty())
+    {
+        ss << " pinned to physical cores (logical processors ";
+        for (usize i = 0; i < pins.size(); ++i)
+            ss << (i ? "," : "") << pins[i];
+        ss << ")";
+    }
 
     auto boundThreadsByNodeStr = thread_binding_information_as_string();
     if (boundThreadsByNodeStr.empty())

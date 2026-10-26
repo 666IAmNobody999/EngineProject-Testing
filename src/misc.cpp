@@ -129,20 +129,20 @@ class Logger {
 }  // namespace
 
 
-// Returns the full name of the current Pikafish version.
+// Returns the full name of the current 幻神引擎 (Pikafish-based) version.
 //
 // For local dev compiles we try to append the commit SHA and
 // commit date from git. If that fails only the local compilation
 // date is set and "nogit" is specified:
-//      Pikafish dev-YYYYMMDD-SHA
+//      幻神引擎 dev-YYYYMMDD-SHA
 //      or
-//      Pikafish dev-YYYYMMDD-nogit
+//      幻神引擎 dev-YYYYMMDD-nogit
 //
 // For releases (non-dev builds) we only include the version number:
-//      Pikafish version
+//      幻神引擎 version
 std::string engine_version_info() {
     std::stringstream ss;
-    ss << "Pikafish " << version << std::setfill('0');
+    ss << "\u5E7B\u795E\u5F15\u64CE " << version << std::setfill('0');  // 幻神引擎 (UTF-8)
 
     if constexpr (version == "dev")
     {
