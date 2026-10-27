@@ -142,7 +142,7 @@ class Logger {
 //      幻神引擎 version
 std::string engine_version_info() {
     std::stringstream ss;
-    ss << "幻神引擎 " << version << std::setfill('0');
+    ss << "Huan Shen Engine  " << version << std::setfill('0');
 
     if constexpr (version == "dev")
     {
@@ -178,7 +178,7 @@ std::string engine_version_info() {
 
 std::string engine_info(bool to_uci) {
     return engine_version_info() + (to_uci ? "\nid author " : " by ")
-         + "the Pikafish developers (see AUTHORS file)";
+         + "the Huan Shen & Pikafish developers (join our QQ Group: 860801936)";
 }
 
 
