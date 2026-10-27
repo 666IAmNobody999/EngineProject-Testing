@@ -178,7 +178,7 @@ std::string engine_version_info() {
 
 std::string engine_info(bool to_uci) {
     return engine_version_info() + (to_uci ? "\nid author " : " by ")
-         + "the Huan Shen & Pikafish developers (join our QQ Group: 860801936)";
+         + "Huan Shen and the Pikafish developers (join our QQ Group: 860801936)";
 }
 
 
