@@ -142,7 +142,7 @@ class Logger {
 //      幻神引擎 version
 std::string engine_version_info() {
     std::stringstream ss;
-    ss << "\u5E7B\u795E\u5F15\u64CE " << version << std::setfill('0');  // 幻神引擎 (UTF-8)
+    ss << "幻神引擎 " << version << std::setfill('0');
 
     if constexpr (version == "dev")
     {
