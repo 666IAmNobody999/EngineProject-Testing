@@ -56,12 +56,6 @@ namespace {
 // no-op there.
 void force_process_priority() { WinPerf::apply_process_tuning(); }
 
-// EvalFile is a combo option; map its (case-insensitive) value to the exact
-// net file name. Anything unexpected falls back to the default net.
-std::string eval_file_name(const Option& o) {
-    return o == EvalFileZeroTestName ? EvalFileZeroTestName : EvalFileDefaultName;
-}
-
 }  // namespace
 
 namespace NN = Eval::NNUE;
@@ -227,9 +221,9 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                 Option(Search::Skill::LowestElo, Search::Skill::LowestElo, Search::Skill::HighestElo));
 
     options.add(  //
-      "EvalFile", Option(EvalFileDefaultName " var " EvalFileDefaultName " var " EvalFileZeroTestName,
-                         EvalFileDefaultName, [this](const Option& o) {
-                             load_network(path_from_utf8(eval_file_name(o)));
+      "EvalFile", Option(EvalFileDefaultName " var " EvalFileDefaultName, EvalFileDefaultName,
+                         [this](const Option&) {
+                             load_network(path_from_utf8(EvalFileDefaultName));
                              return std::nullopt;
                          }));
 	  
@@ -391,7 +385,7 @@ void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }
 // network related
 
 void Engine::verify_network() const {
-    const auto file = path_from_utf8(eval_file_name(options["EvalFile"]));
+    const auto file = path_from_utf8(EvalFileDefaultName);
     network->verify(onVerifyNetwork, networkFile, file);
 
     auto statuses = network.get_status_and_errors();

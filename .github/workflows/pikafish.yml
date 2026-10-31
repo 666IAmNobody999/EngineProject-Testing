@@ -17,7 +17,7 @@ jobs:
       # Released file name. The build itself uses an ASCII name (pikafish-build*)
       # so that make, Intel SDE and the PGO bench never see a non-ASCII path.
       EXE: 幻神引擎-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
-      # (not shipped); Windows embeds pikafish.nnue + pikafish_zero_test.nnue in
+      # (not shipped); Windows embeds pikafish.nnue in
       # the binary (Makefile embed=yes, the default for Windows), like Android.
       NET_REPO: ${{ vars.NET_REPO }}
       NET_TAG: ${{ vars.NET_TAG }}
@@ -46,11 +46,7 @@ jobs:
             echo "::error::NET_TOKEN secret, NET_REPO and NET_TAG variables are required for the PGO build."
             exit 1
           fi
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            NETS="pikafish.nnue pikafish_zero_test.nnue"   # embedded in the binary
-          else
-            NETS="pikafish.nnue"                           # PGO training run only
-          fi
+          NETS="pikafish.nnue"   # Windows: embedded in the binary; others: PGO training run only
           gh release download "$NET_TAG" --repo "$NET_REPO" \
             $(for n in $NETS; do printf -- '--pattern %s ' "$n"; done) --dir . --clobber
           if [ -n "$NET_SHA256" ]; then
@@ -101,7 +97,7 @@ jobs:
       - name: Remove private networks
         if: always()
         shell: bash
-        run: rm -rf pikafish.nnue pikafish_zero_test.nnue temp_builds
+        run: rm -rf pikafish.nnue temp_builds
 
       # Artifacts automatically get zipped.
       # To avoid double-zipping, we use the unzipped directory
@@ -139,8 +135,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Android embeds both nets in the binary (Makefile embed=yes, the default
-      # for COMP=ndk), so both files must be present at compile time.
+      # Android embeds the net in the binary (Makefile embed=yes, the default
+      # for COMP=ndk), so the file must be present at compile time.
       - name: Download private networks (embedded in the Android binary)
         env:
           GH_TOKEN: ${{ secrets.NET_TOKEN }}
@@ -150,11 +146,11 @@ jobs:
             exit 1
           fi
           gh release download "$NET_TAG" --repo "$NET_REPO" \
-            --pattern pikafish.nnue --pattern pikafish_zero_test.nnue --dir . --clobber
+            --pattern pikafish.nnue --dir . --clobber
           if [ -n "$NET_SHA256" ]; then
             echo "$NET_SHA256  pikafish.nnue" | sha256sum -c -
           fi
-          ls -l pikafish.nnue pikafish_zero_test.nnue
+          ls -l pikafish.nnue
 
       - name: Install NDK
         run: |
@@ -191,7 +187,7 @@ jobs:
 
       - name: Remove private networks
         if: always()
-        run: rm -rf pikafish.nnue pikafish_zero_test.nnue temp_builds
+        run: rm -rf pikafish.nnue temp_builds
 
       # Artifacts automatically get zipped.
       # To avoid double-zipping, we use the unzipped directory
