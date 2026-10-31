@@ -245,7 +245,7 @@ constexpr usize DrawMultiPV = 6;
 // playing, instead of the best move, the searched root move that is between
 // HumanMinDrop and HumanMaxDrop centipawns worse, preferring the smallest drop.
 constexpr usize HumanMultiPV      = 4;
-constexpr int   HumanChance       = 5;
+constexpr int   HumanChance       = 4;
 constexpr int   HumanMinAdvantage = 100;
 constexpr int   HumanMinDrop      = 50;
 constexpr int   HumanMaxDrop      = 150;
