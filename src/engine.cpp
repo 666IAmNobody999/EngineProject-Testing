@@ -22,6 +22,7 @@
 #include <cassert>
 #include <filesystem>
 #include <deque>
+#include <initializer_list>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -55,6 +56,15 @@ namespace {
 // On non-Windows platforms raising priority needs elevated rights, so it is a
 // no-op there.
 void force_process_priority() { WinPerf::apply_process_tuning(); }
+
+// NumaPolicy is a combo option; map its (case-insensitive) value to the exact
+// lower-case name used by the NUMA code. Anything unexpected falls back to auto.
+std::string numa_policy_name(const Option& o) {
+    for (const char* name : {"auto", "system", "hardware", "none"})
+        if (o == name)
+            return name;
+    return "auto";
+}
 
 }  // namespace
 
@@ -228,9 +238,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                          }));
 	  
     options.add(  //
-      "NumaPolicy", Option("auto", [this](const Option& o) {
-          if (!set_numa_config_from_option(o))
-              return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
+      "NumaPolicy", Option("auto var auto var system var hardware var none", "auto",
+                           [this](const Option& o) {
+          if (!set_numa_config_from_option(numa_policy_name(o)))
+              return std::string("NumaPolicy: invalid value, keeping previous config.");
           return numa_config_information_as_string() + "\n"
                + thread_allocation_information_as_string();
       }));

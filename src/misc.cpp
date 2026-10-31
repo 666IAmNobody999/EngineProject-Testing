@@ -129,20 +129,20 @@ class Logger {
 }  // namespace
 
 
-// Returns the full name of the current 骞荤寮曟搸 (Pikafish-based) version.
+// Returns the full name of the current 幻神引擎 (Pikafish-based) version.
 //
 // For local dev compiles we try to append the commit SHA and
 // commit date from git. If that fails only the local compilation
 // date is set and "nogit" is specified:
-//      骞荤寮曟搸 dev-YYYYMMDD-SHA
+//      幻神引擎 dev-YYYYMMDD-SHA
 //      or
-//      骞荤寮曟搸 dev-YYYYMMDD-nogit
+//      幻神引擎 dev-YYYYMMDD-nogit
 //
 // For releases (non-dev builds) we only include the version number:
-//      骞荤寮曟搸 version
+//      幻神引擎 version
 std::string engine_version_info() {
     std::stringstream ss;
-    ss << "Huan Shen Engine  " << version << std::setfill('0');
+    ss << "幻神引擎 " << version << std::setfill('0');
 
     if constexpr (version == "dev")
     {
@@ -178,7 +178,7 @@ std::string engine_version_info() {
 
 std::string engine_info(bool to_uci) {
     return engine_version_info() + (to_uci ? "\nid author " : " by ")
-         + "Huan Shen and the Pikafish developers (join our QQ Group: 860801936)";
+         + "幻神 and the Pikafish developers (join our QQ Group: 860801936)";
 }
 
 
