@@ -743,14 +743,14 @@ bool Search::Worker::iterative_deepening() {
         const int  minDropCp = shaped ? Attack::HumanMinDrop / 2 : Attack::HumanMinDrop;
         const int  maxDropCp = shaped ? Attack::HumanMaxDrop / 2 : Attack::HumanMaxDrop;
 
-        // Pity timer: after HumanPity eligible moves in a row without a worse
+        // Pity timer: after HumanChance - 1 eligible moves in a row without a worse
         // move, the next eligible move skips the random roll. If no move fits
         // the drop window then, the window is widened so that the chosen move
         // still keeps more than HumanMinAdvantage, and if all alternatives are
         // less than minDropCp worse the worst of them is played. Only when no
         // alternative exists at all is the counter kept for the next move.
         int&       missed = main_manager()->humanMissed;
-        const bool forced = missed >= Attack::HumanPity;
+        const bool forced = missed >= Attack::HumanChance - 1;
         bool       played = false;
 
         if (bestCp > Attack::HumanMinAdvantage

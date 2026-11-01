@@ -131,12 +131,9 @@ class Logger {
 
 // Returns the full name of the current 幻神引擎 (Pikafish-based) version.
 //
-// For local dev compiles we try to append the commit SHA and
-// commit date from git. If that fails only the local compilation
-// date is set and "nogit" is specified:
-//      幻神引擎 dev-YYYYMMDD-SHA
-//      or
-//      幻神引擎 dev-YYYYMMDD-nogit
+// For local dev compiles only the commit date from git (or the local
+// compilation date if git is not available) is shown:
+//      幻神引擎 YYYYMMDD
 //
 // For releases (non-dev builds) we only include the version number:
 //      幻神引擎 version
@@ -144,11 +141,12 @@ std::string engine_version_info() {
     std::stringstream ss;
     // "幻神引擎" as UTF-8 bytes, so the output is the same whatever encoding
     // this file is saved in (keep this file UTF-8).
-    ss << "\xE5\xB9\xBB\xE7\xA5\x9E\xE5\xBC\x95\xE6\x93\x8E" " " << version << std::setfill('0');
+    ss << "\xE5\xB9\xBB\xE7\xA5\x9E\xE5\xBC\x95\xE6\x93\x8E" " " << std::setfill('0');
 
+    // Dev builds show only the build date, without "dev-" and the commit SHA:
+    //      幻神引擎 YYYYMMDD
     if constexpr (version == "dev")
     {
-        ss << "-";
 #ifdef GIT_DATE
         ss << stringify(GIT_DATE);
 #else
@@ -161,19 +159,9 @@ std::string engine_version_info() {
         ss << year << std::setw(2) << std::setfill('0') << (1 + months.find(month) / 4)
            << std::setw(2) << std::setfill('0') << day;
 #endif
-
-#ifdef GIT_DIFFINDEX
-        ss << "-m";
-#endif
-
-        ss << "-";
-
-#ifdef GIT_SHA
-        ss << stringify(GIT_SHA);
-#else
-        ss << "nogit";
-#endif
     }
+    else
+        ss << version;
 
     return ss.str();
 }
