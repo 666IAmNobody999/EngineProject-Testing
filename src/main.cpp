@@ -43,6 +43,10 @@ int main(int argc, char* argv[]) {
     if (WinPerf::run_power_watcher(argc, argv))
         return 0;
 
+    // Switch the Windows console to UTF-8 before the first output, so the
+    // banner and the "id name" line use the same (UTF-8) encoding.
+    set_console_utf8();
+
     std::cout << engine_info() << std::endl;
 
     // Windows: "幻神终极效能" power plan while the engine runs.

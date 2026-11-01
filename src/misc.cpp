@@ -129,20 +129,22 @@ class Logger {
 }  // namespace
 
 
-// Returns the full name of the current »ÃÉñÒıÇæ (Pikafish-based) version.
+// Returns the full name of the current å¹»ç¥å¼•æ“ (Pikafish-based) version.
 //
 // For local dev compiles we try to append the commit SHA and
 // commit date from git. If that fails only the local compilation
 // date is set and "nogit" is specified:
-//      »ÃÉñÒıÇæ dev-YYYYMMDD-SHA
+//      å¹»ç¥å¼•æ“ dev-YYYYMMDD-SHA
 //      or
-//      »ÃÉñÒıÇæ dev-YYYYMMDD-nogit
+//      å¹»ç¥å¼•æ“ dev-YYYYMMDD-nogit
 //
 // For releases (non-dev builds) we only include the version number:
-//      »ÃÉñÒıÇæ version
+//      å¹»ç¥å¼•æ“ version
 std::string engine_version_info() {
     std::stringstream ss;
-    ss << "»ÃÉñÒıÇæ " << version << std::setfill('0');
+    // "å¹»ç¥å¼•æ“" as UTF-8 bytes, so the output is the same whatever encoding
+    // this file is saved in (keep this file UTF-8).
+    ss << "\xE5\xB9\xBB\xE7\xA5\x9E\xE5\xBC\x95\xE6\x93\x8E" " " << version << std::setfill('0');
 
     if constexpr (version == "dev")
     {
@@ -176,9 +178,10 @@ std::string engine_version_info() {
     return ss.str();
 }
 
+// "å¹»ç¥" in the author line is written as UTF-8 bytes as well.
 std::string engine_info(bool to_uci) {
     return engine_version_info() + (to_uci ? "\nid author " : " by ")
-         + "»ÃÉñ and the Pikafish developers (join our QQ Group: 860801936)";
+         + "\xE5\xB9\xBB\xE7\xA5\x9E" " and the Pikafish developers (join our QQ Group: 860801936)";
 }
 
 
