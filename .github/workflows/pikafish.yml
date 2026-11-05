@@ -107,10 +107,25 @@ jobs:
           path: ${{ env.EXE }}
 
   Pikafish-Android:
-    name: Android-${{ matrix.config.arch }}-universal
+    name: Android-${{ matrix.config.arch }}-universal-${{ matrix.variant.id }}
     runs-on: ubuntu-latest
     strategy:
+      # One variant failing does not cancel the other builds.
+      fail-fast: false
       matrix:
+        # Five Android engines, differing only in the default Attack Mode and
+        # the engine name (Makefile variant=1..5, see src/misc.h).
+        variant:
+          - id: 1
+            name: 幻神引擎                 # Attack Mode BestMove
+          - id: 2
+            name: 幻神引擎-剃光头模式      # Attack Mode BareKing
+          - id: 3
+            name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
+          - id: 4
+            name: 幻神引擎-純人剃光頭模式  # Attack Mode HumanLikeBareKing
+          - id: 5
+            name: 幻神引擎-必和棋模式      # Attack Mode ForcedDraw
         config:
           # The PGO bench of an Android binary runs on the Linux runner: static
           # bionic executables run directly on a Linux kernel. arm64 slices run
@@ -123,7 +138,7 @@ jobs:
     env:
       ARCH: ${{ matrix.config.arch }}-universal
       COMP: ndk
-      EXE: 幻神引擎-Android-${{ matrix.config.arch }}-universal
+      EXE: ${{ matrix.variant.name }}-Android-${{ matrix.config.arch }}-universal
       LDFLAGS: "-static -Wno-unused-command-line-argument"
       NET_REPO: ${{ vars.NET_REPO }}
       NET_TAG: ${{ vars.NET_TAG }}
@@ -181,7 +196,8 @@ jobs:
           else
             PREFIX="$SDE_PATH/sde64 -future --"
           fi
-          make -j4 profile-build EXE=pikafish-build RUN_PREFIX="$PREFIX"
+          make -j4 profile-build EXE=pikafish-build RUN_PREFIX="$PREFIX" \
+            variant=${{ matrix.variant.id }}
           make strip EXE=pikafish-build
           cp pikafish-build "../$EXE"
 

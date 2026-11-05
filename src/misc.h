@@ -72,6 +72,36 @@ using i128 = std::_Signed128;
 #endif
 
 std::string engine_version_info();
+
+// Build variant, chosen with the Makefile flag variant=1..5 (the Android
+// workflow builds all five). It only sets the default "Attack Mode" and adds a
+// suffix to the engine name; 0 (no flag) keeps the normal build unchanged.
+//   1 幻神引擎                 Attack Mode BestMove
+//   2 幻神引擎-剃光头模式      Attack Mode BareKing
+//   3 幻神引擎-白号纯人模式    Attack Mode HumanLike
+//   4 幻神引擎-純人剃光頭模式  Attack Mode HumanLikeBareKing
+//   5 幻神引擎-必和棋模式      Attack Mode ForcedDraw
+#ifndef HS_VARIANT
+    #define HS_VARIANT 0
+#endif
+static_assert(HS_VARIANT >= 0 && HS_VARIANT <= 5, "variant must be 1..5");
+
+constexpr const char* variant_attack_mode() {
+    return HS_VARIANT == 1 ? "BestMove"
+         : HS_VARIANT == 2 ? "BareKing"
+         : HS_VARIANT == 3 ? "HumanLike"
+         : HS_VARIANT == 5 ? "ForcedDraw"
+                           : "HumanLikeBareKing";
+}
+
+// Name suffix as UTF-8 bytes (one escape run per literal, see misc.cpp).
+constexpr const char* variant_name_suffix() {
+    return HS_VARIANT == 2 ? "-" "\xE5\x89\x83" "\xE5\x85\x89" "\xE5\xA4\xB4" "\xE6\xA8\xA1" "\xE5\xBC\x8F"
+         : HS_VARIANT == 3 ? "-" "\xE7\x99\xBD" "\xE5\x8F\xB7" "\xE7\xBA\xAF" "\xE4\xBA\xBA" "\xE6\xA8\xA1" "\xE5\xBC\x8F"
+         : HS_VARIANT == 4 ? "-" "\xE7\xB4\x94" "\xE4\xBA\xBA" "\xE5\x89\x83" "\xE5\x85\x89" "\xE9\xA0\xAD" "\xE6\xA8\xA1" "\xE5\xBC\x8F"
+         : HS_VARIANT == 5 ? "-" "\xE5\xBF\x85" "\xE5\x92\x8C" "\xE6\xA3\x8B" "\xE6\xA8\xA1" "\xE5\xBC\x8F"
+                           : "";
+}
 std::string engine_info(bool to_uci = false);
 std::string compiler_info();
 

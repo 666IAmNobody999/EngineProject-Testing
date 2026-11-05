@@ -141,7 +141,8 @@ std::string engine_version_info() {
     std::stringstream ss;
     // "幻神引擎" as UTF-8 bytes, so the output is the same whatever encoding
     // this file is saved in (keep this file UTF-8).
-    ss << "\xE5\xB9\xBB\xE7\xA5\x9E\xE5\xBC\x95\xE6\x93\x8E" " " << std::setfill('0');
+    ss << "\xE5\xB9\xBB\xE7\xA5\x9E\xE5\xBC\x95\xE6\x93\x8E" << variant_name_suffix() << " "
+       << std::setfill('0');
 
     // Dev builds show only the build date, without "dev-" and the commit SHA:
     //      幻神引擎 YYYYMMDD

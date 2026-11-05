@@ -124,8 +124,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     // of Bare King live in the transposition table, so switching modes clears it.
     options.add(  //
       "Attack Mode",
-      Option("HumanLikeBareKing var BestMove var BareKing var HumanLike var HumanLikeBareKing var ForcedDraw",
-             "HumanLikeBareKing",
+      Option((std::string(variant_attack_mode())
+              + " var BestMove var BareKing var HumanLike var HumanLikeBareKing var ForcedDraw")
+               .c_str(),
+             variant_attack_mode(),
              [this](const Option&) {
                  search_clear();
                  return std::nullopt;

@@ -496,6 +496,12 @@ CXXFLAGS = $(ENV_CXXFLAGS) -Wall -Wcast-qual -fno-exceptions -std=c++17 $(EXTRAC
 DEPENDFLAGS = $(ENV_DEPENDFLAGS) -std=c++17
 LDFLAGS = $(ENV_LDFLAGS) $(EXTRALDFLAGS)
 
+# Build variant 1..5 (default Attack Mode + engine name suffix, see misc.h).
+# A command-line variable, so it also reaches the PGO and universal sub-makes.
+ifneq ($(variant),)
+	CXXFLAGS += -DHS_VARIANT=$(variant)
+endif
+
 ifeq ($(COMP),)
 	COMP=gcc
 endif
