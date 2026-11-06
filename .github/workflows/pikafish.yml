@@ -14,9 +14,9 @@ jobs:
     env:
       ARCH: x86-64-universal
       COMP: clang
-      # Released file name (EXE) is set by the "Set file name" step. The build
-      # itself uses an ASCII name (pikafish-build*) so that make, Intel SDE and
-      # the PGO bench never see a non-ASCII path.
+      # Released file name. The build itself uses an ASCII name (pikafish-build*)
+      # so that make, Intel SDE and the PGO bench never see a non-ASCII path.
+      EXE: ${{ matrix.variant.name }}-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
       # (not shipped); Windows embeds pikafish.nnue in
       # the binary (Makefile embed=yes, the default for Windows), like Android.
       NET_REPO: ${{ vars.NET_REPO }}
@@ -29,9 +29,9 @@ jobs:
         # HumanLikeBareKing), see src/misc.h and the Android job.
         variant:
           - id: ''
-            mode: ''
+            name: 幻神引擎                 # Attack Mode BestMove
           - id: 4
-            mode: 纯人剃光头模式
+            name: 幻神引擎-纯人剃光头模式  # Attack Mode HumanLikeBareKing
         config:
           - name: Windows
             os: windows-latest
@@ -72,20 +72,6 @@ jobs:
             mingw-w64-clang-x86_64-llvm-tools
             mingw-w64-clang-x86_64-compiler-rt
             make git
-
-      # 幻神引擎-<OS>-...                 normal build
-      # 幻神引擎MMDD (<mode>)-<OS>-...     variant build, MMDD = commit date
-      #                                   (same date as the uci engine name)
-      - name: Set file name
-        shell: bash
-        run: |
-          if [ -n "${{ matrix.variant.mode }}" ]; then
-            MMDD=$(git show -s --date=format:%m%d --format=%cd HEAD)
-            BASE="幻神引擎${MMDD} (${{ matrix.variant.mode }})"
-          else
-            BASE="幻神引擎"
-          fi
-          echo "EXE=${BASE}-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}" >> "$GITHUB_ENV"
 
       - name: Set up LLVM
         if: runner.os == 'Linux'
@@ -136,10 +122,9 @@ jobs:
       # One variant failing does not cancel the other builds.
       fail-fast: false
       matrix:
-        # Five Android engines, differing only in the default Attack Mode and
-        # the engine name (Makefile variant=1..5, see src/misc.h).
+        # Five Android engines, differing only in the default Attack Mode
+        # (Makefile variant=1..5, see src/misc.h) and the file name.
         variant:
-        # mode set: file name 幻神引擎MMDD (<mode>)-Android-... (MMDD = commit date)
           - id: 1
             name: 幻神引擎                 # Attack Mode BestMove
           - id: 2
@@ -147,7 +132,7 @@ jobs:
           - id: 3
             name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
           - id: 4
-            mode: 纯人剃光头模式           # Attack Mode HumanLikeBareKing
+            name: 幻神引擎-纯人剃光头模式  # Attack Mode HumanLikeBareKing
           - id: 5
             name: 幻神引擎-必和棋模式      # Attack Mode ForcedDraw
         config:
@@ -162,6 +147,7 @@ jobs:
     env:
       ARCH: ${{ matrix.config.arch }}-universal
       COMP: ndk
+      EXE: ${{ matrix.variant.name }}-Android-${{ matrix.config.arch }}-universal
       LDFLAGS: "-static -Wno-unused-command-line-argument"
       NET_REPO: ${{ vars.NET_REPO }}
       NET_TAG: ${{ vars.NET_TAG }}
@@ -175,16 +161,6 @@ jobs:
 
       # Android embeds the net in the binary (Makefile embed=yes, the default
       # for COMP=ndk), so the file must be present at compile time.
-      - name: Set file name
-        run: |
-          if [ -n "${{ matrix.variant.mode }}" ]; then
-            MMDD=$(git show -s --date=format:%m%d --format=%cd HEAD)
-            BASE="幻神引擎${MMDD} (${{ matrix.variant.mode }})"
-          else
-            BASE="${{ matrix.variant.name }}"
-          fi
-          echo "EXE=${BASE}-Android-${{ matrix.config.arch }}-universal" >> "$GITHUB_ENV"
-
       - name: Download private networks (embedded in the Android binary)
         env:
           GH_TOKEN: ${{ secrets.NET_TOKEN }}
@@ -255,11 +231,11 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: 幻神引擎*
+          pattern: 幻神引擎-*
           path: Artifacts
 
       - name: Put binaries into release root
-        run: cp Artifacts/幻神引擎*/* .
+        run: cp Artifacts/幻神引擎-*/* .
 
       - name: Download wiki
         run: |
@@ -273,7 +249,7 @@ jobs:
         with:
           name: 幻神引擎
           path: |
-            幻神引擎*
+            幻神引擎-*
             Wiki
             AUTHORS
             CONTRIBUTING.md
