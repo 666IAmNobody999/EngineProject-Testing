@@ -25,11 +25,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows: the normal build (no variant) plus variant 4 (Attack Mode
-        # HumanLikeBareKing), see src/misc.h and the Android job.
+        # Windows: the normal build (no variant) plus variants 3 (Attack Mode
+        # HumanLike) and 4 (HumanLikeBareKing), see src/misc.h and the Android job.
         variant:
           - id: ''
             name: 幻神引擎                 # Attack Mode BestMove
+          - id: 3
+            name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
           - id: 4
             name: 幻神引擎-纯人剃光头模式  # Attack Mode HumanLikeBareKing
         config:
