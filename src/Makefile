@@ -502,6 +502,11 @@ ifneq ($(variant),)
 	CXXFLAGS += -DHS_VARIANT=$(variant)
 endif
 
+# asian=yes: default "Repetition Rule" AsianRule instead of SkyRule (亚规版).
+ifeq ($(asian),yes)
+	CXXFLAGS += -DHS_ASIAN_RULE=1
+endif
+
 ifeq ($(COMP),)
 	COMP=gcc
 endif

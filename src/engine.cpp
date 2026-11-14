@@ -150,8 +150,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Repetition Rule",
-      Option("SkyRule var SkyRule var AsianRule var QiZheRule var YiTianRule var ChineseRule var ComputerRule",
-             "SkyRule", [this](const Option& o) {
+      Option((std::string(default_repetition_rule())
+              + " var SkyRule var AsianRule var QiZheRule var YiTianRule var ChineseRule var ComputerRule")
+               .c_str(),
+             default_repetition_rule(), [this](const Option& o) {
                  using RR = RuleConfig::RepetitionRule;
 
                  RuleConfig::repetitionRule =

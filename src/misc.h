@@ -94,6 +94,15 @@ constexpr const char* variant_attack_mode() {
          : HS_VARIANT == 5 ? "ForcedDraw"
                            : "BestMove";
 }
+// Default "Repetition Rule": AsianRule with the Makefile flag asian=yes (亚规版),
+// otherwise SkyRule.
+#ifndef HS_ASIAN_RULE
+    #define HS_ASIAN_RULE 0
+#endif
+constexpr const char* default_repetition_rule() {
+    return HS_ASIAN_RULE ? "AsianRule" : "SkyRule";
+}
+
 std::string engine_info(bool to_uci = false);
 std::string compiler_info();
 

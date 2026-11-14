@@ -9,7 +9,7 @@ on:
 
 jobs:
   Pikafish-x86-64:
-    name: ${{ matrix.config.name }}-x86-64-universal${{ matrix.variant.id && format('-{0}', matrix.variant.id) || '' }}
+    name: ${{ matrix.config.name }}-x86-64-universal${{ matrix.variant.id && format('-{0}', matrix.variant.id) || '' }}${{ matrix.variant.asian && '-asian' || '' }}
     runs-on: ${{ matrix.config.os }}
     env:
       ARCH: x86-64-universal
@@ -26,10 +26,14 @@ jobs:
       fail-fast: false
       matrix:
         # Windows: the normal build (no variant) plus variants 3 (Attack Mode
-        # HumanLike) and 4 (HumanLikeBareKing), see src/misc.h and the Android job.
+        # HumanLike) and 4 (HumanLikeBareKing), see src/misc.h and the Android job,
+        # and the 亚规 build (asian=yes: default Repetition Rule AsianRule).
         variant:
           - id: ''
             name: 幻神引擎                 # Attack Mode BestMove
+          - id: ''
+            asian: 'yes'
+            name: 幻神引擎-亚规            # Attack Mode BestMove, AsianRule
           - id: 3
             name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
           - id: 4
@@ -101,7 +105,7 @@ jobs:
           fi
           BUILD=pikafish-build${{ matrix.config.ext }}
           make -j4 profile-build EXE=$BUILD RUN_PREFIX="$SDE -future --" \
-            variant=${{ matrix.variant.id }}
+            variant=${{ matrix.variant.id }} asian=${{ matrix.variant.asian }}
           make strip EXE=$BUILD
           cp "$BUILD" "../$EXE"
 

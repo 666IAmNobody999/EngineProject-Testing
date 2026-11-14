@@ -52,7 +52,8 @@ namespace RuleConfig {
 // Defaults: SkyRule with rule120, Sixty Move Rule on.
 // AsianRule/SkyRule/ChineseRule/YiTianRule all couple to rule120 and keep the
 // Sixty Move Rule on (enforced in engine.cpp couplings).
-RepetitionRule repetitionRule  = RepetitionRule::SKY;
+// Must match the "Repetition Rule" default in engine.cpp (asian=yes: AsianRule).
+RepetitionRule repetitionRule  = HS_ASIAN_RULE ? RepetitionRule::ASIAN : RepetitionRule::SKY;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 1;
 bool           sixtyMoveRule   = true;
