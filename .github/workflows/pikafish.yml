@@ -122,19 +122,27 @@ jobs:
           path: ${{ env.EXE }}
 
   Pikafish-Android:
-    name: Android-${{ matrix.config.arch }}-universal-${{ matrix.variant.id }}
+    name: Android-${{ matrix.config.arch }}-universal-${{ matrix.variant.id }}${{ matrix.variant.asian && '-asian' || '' }}
     runs-on: ubuntu-latest
     strategy:
       # One variant failing does not cancel the other builds.
       fail-fast: false
       matrix:
         # Five Android engines, differing only in the default Attack Mode
-        # (Makefile variant=1..5, see src/misc.h) and the file name.
+        # (Makefile variant=1..5, see src/misc.h) and the file name, plus the
+        # 亚规 builds of 1 and 2 (asian=yes: default Repetition Rule AsianRule;
+        # all other builds default to SkyRule).
         variant:
           - id: 1
             name: 幻神引擎                 # Attack Mode BestMove
+          - id: 1
+            asian: 'yes'
+            name: 幻神引擎-亚规            # Attack Mode BestMove, AsianRule
           - id: 2
             name: 幻神引擎-剃光头模式      # Attack Mode BareKing
+          - id: 2
+            asian: 'yes'
+            name: 幻神引擎-剃光头模式-亚规 # Attack Mode BareKing, AsianRule
           - id: 3
             name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
           - id: 4
@@ -212,7 +220,7 @@ jobs:
             PREFIX="$SDE_PATH/sde64 -future --"
           fi
           make -j4 profile-build EXE=pikafish-build RUN_PREFIX="$PREFIX" \
-            variant=${{ matrix.variant.id }}
+            variant=${{ matrix.variant.id }} asian=${{ matrix.variant.asian }}
           make strip EXE=pikafish-build
           cp pikafish-build "../$EXE"
 
