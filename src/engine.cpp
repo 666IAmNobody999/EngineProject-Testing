@@ -198,10 +198,13 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     // Attack Mode: Best Move (normal) / Bare King / Forced Draw. The shaped values
     // of Bare King live in the transposition table, so switching modes clears it.
+    // With lockmode=yes only the default is offered (see misc.h).
     options.add(  //
       "Attack Mode",
       Option((std::string(variant_attack_mode())
-              + " var BestMove var BareKing var HumanLike var HumanLikeBareKing var ForcedDraw")
+              + (HS_LOCK_ATTACK_MODE
+                   ? std::string(" var ") + variant_attack_mode()
+                   : " var BestMove var BareKing var HumanLike var HumanLikeBareKing var ForcedDraw"))
                .c_str(),
              variant_attack_mode(),
              [this](const Option&) {

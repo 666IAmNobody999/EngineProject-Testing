@@ -502,6 +502,11 @@ ifneq ($(variant),)
 	CXXFLAGS += -DHS_VARIANT=$(variant)
 endif
 
+# lockmode=yes: "Attack Mode" offers only its default mode (see misc.h).
+ifeq ($(lockmode),yes)
+	CXXFLAGS += -DHS_LOCK_ATTACK_MODE=1
+endif
+
 # asian=yes: default "Repetition Rule" AsianRule instead of SkyRule (亚规版).
 ifeq ($(asian),yes)
 	CXXFLAGS += -DHS_ASIAN_RULE=1

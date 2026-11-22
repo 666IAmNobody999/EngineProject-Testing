@@ -102,6 +102,12 @@ constexpr const char* variant_attack_mode() {
 constexpr const char* default_repetition_rule() {
     return HS_ASIAN_RULE ? "AsianRule" : "SkyRule";
 }
+// "Attack Mode" offers only its default with the Makefile flag lockmode=yes
+// (used by some Android builds, see .github/workflows/pikafish.yml), otherwise
+// every mode.
+#ifndef HS_LOCK_ATTACK_MODE
+    #define HS_LOCK_ATTACK_MODE 0
+#endif
 
 std::string engine_info(bool to_uci = false);
 std::string compiler_info();

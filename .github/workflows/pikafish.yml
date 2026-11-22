@@ -131,17 +131,22 @@ jobs:
         # Five Android engines, differing only in the default Attack Mode
         # (Makefile variant=1..5, see src/misc.h) and the file name, plus the
         # 亚规 builds of 1 and 2 (asian=yes: default Repetition Rule AsianRule;
-        # all other builds default to SkyRule).
+        # all other builds default to SkyRule). The builds of 1 and 2 offer only
+        # their default Attack Mode (lockmode=yes, see src/misc.h).
         variant:
           - id: 1
+            lock: 'yes'
             name: 幻神引擎                 # Attack Mode BestMove
           - id: 1
             asian: 'yes'
+            lock: 'yes'
             name: 幻神引擎-亚规            # Attack Mode BestMove, AsianRule
           - id: 2
+            lock: 'yes'
             name: 幻神引擎-剃光头模式      # Attack Mode BareKing
           - id: 2
             asian: 'yes'
+            lock: 'yes'
             name: 幻神引擎-剃光头模式-亚规 # Attack Mode BareKing, AsianRule
           - id: 3
             name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
@@ -220,7 +225,8 @@ jobs:
             PREFIX="$SDE_PATH/sde64 -future --"
           fi
           make -j4 profile-build EXE=pikafish-build RUN_PREFIX="$PREFIX" \
-            variant=${{ matrix.variant.id }} asian=${{ matrix.variant.asian }}
+            variant=${{ matrix.variant.id }} asian=${{ matrix.variant.asian }} \
+            lockmode=${{ matrix.variant.lock }}
           make strip EXE=pikafish-build
           cp pikafish-build "../$EXE"
 
