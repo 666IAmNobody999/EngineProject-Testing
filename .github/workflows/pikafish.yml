@@ -26,7 +26,7 @@ jobs:
       fail-fast: false
       matrix:
         # Windows: the normal build (no variant) plus variants 3 (Attack Mode
-        # HumanLike) and 4 (HumanLikeBareKing), see src/misc.h and the Android job,
+        # HumanLike), 4 (HumanLikeBareKing) and 6 (HumanKiller), see src/misc.h and the Android job,
         # and the 亚规 build (asian=yes: default Repetition Rule AsianRule).
         variant:
           - id: ''
@@ -38,6 +38,8 @@ jobs:
             name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
           - id: 4
             name: 幻神引擎-纯人剃光头模式  # Attack Mode HumanLikeBareKing
+          - id: 6
+            name: 幻神引擎-纯人杀手模式    # Attack Mode HumanKiller
         config:
           - name: Windows
             os: windows-latest
@@ -128,8 +130,8 @@ jobs:
       # One variant failing does not cancel the other builds.
       fail-fast: false
       matrix:
-        # Five Android engines, differing only in the default Attack Mode
-        # (Makefile variant=1..5, see src/misc.h) and the file name, plus the
+        # Six Android engines, differing only in the default Attack Mode
+        # (Makefile variant=1..6, see src/misc.h) and the file name, plus the
         # 亚规 builds of 1 and 2 (asian=yes: default Repetition Rule AsianRule;
         # all other builds default to SkyRule). The builds of 1 and 2 offer only
         # their default Attack Mode (lockmode=yes, see src/misc.h).
@@ -154,6 +156,8 @@ jobs:
             name: 幻神引擎-纯人剃光头模式  # Attack Mode HumanLikeBareKing
           - id: 5
             name: 幻神引擎-必和棋模式      # Attack Mode ForcedDraw
+          - id: 6
+            name: 幻神引擎-纯人杀手模式    # Attack Mode HumanKiller
         config:
           # The PGO bench of an Android binary runs on the Linux runner: static
           # bionic executables run directly on a Linux kernel. arm64 slices run

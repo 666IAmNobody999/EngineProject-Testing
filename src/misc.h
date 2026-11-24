@@ -73,7 +73,7 @@ using i128 = std::_Signed128;
 
 std::string engine_version_info();
 
-// Build variant, chosen with the Makefile flag variant=1..5 (the Android
+// Build variant, chosen with the Makefile flag variant=1..6 (the Android
 // workflow builds all five, Windows builds the normal one and 4). It only sets
 // the default "Attack Mode"; the engine name is always 幻神引擎. The released
 // file names are set in .github/workflows/pikafish.yml.
@@ -82,16 +82,18 @@ std::string engine_version_info();
 //   3               Attack Mode HumanLike
 //   4               Attack Mode HumanLikeBareKing
 //   5               Attack Mode ForcedDraw
+//   6               Attack Mode HumanKiller
 #ifndef HS_VARIANT
     #define HS_VARIANT 0
 #endif
-static_assert(HS_VARIANT >= 0 && HS_VARIANT <= 5, "variant must be 1..5");
+static_assert(HS_VARIANT >= 0 && HS_VARIANT <= 6, "variant must be 1..6");
 
 constexpr const char* variant_attack_mode() {
     return HS_VARIANT == 2 ? "BareKing"
          : HS_VARIANT == 3 ? "HumanLike"
          : HS_VARIANT == 4 ? "HumanLikeBareKing"
          : HS_VARIANT == 5 ? "ForcedDraw"
+         : HS_VARIANT == 6 ? "HumanKiller"
                            : "BestMove";
 }
 // Default "Repetition Rule": AsianRule with the Makefile flag asian=yes (亚规版),
