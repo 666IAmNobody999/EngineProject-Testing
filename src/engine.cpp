@@ -559,8 +559,11 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     // to the engine, then in the working directory.
     options.add("EngineKnowledge", Option(true));
     options.add("EngineKnowledge File", Option("EngineKnowledge.bin"));
-    options.add("Knowledge Mode",
-                Option("BestMove var BestMove var Normal var FullyRandom", "BestMove"));
+    options.add(
+      "Knowledge Mode",
+      Option((std::string(default_knowledge_mode()) + " var BestMove var Normal var FullyRandom")
+               .c_str(),
+             default_knowledge_mode()));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName " var " EvalFileDefaultName, EvalFileDefaultName,

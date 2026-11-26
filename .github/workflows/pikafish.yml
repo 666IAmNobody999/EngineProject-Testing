@@ -9,7 +9,7 @@ on:
 
 jobs:
   Pikafish-x86-64:
-    name: ${{ matrix.config.name }}-x86-64-universal${{ matrix.variant.id && format('-{0}', matrix.variant.id) || '' }}${{ matrix.variant.asian && '-asian' || '' }}
+    name: ${{ matrix.config.name }}-x86-64-universal${{ matrix.variant.id && format('-{0}', matrix.variant.id) || '' }}${{ matrix.variant.asian && '-asian' || '' }}${{ matrix.variant.krandom && '-krandom' || '' }}
     runs-on: ${{ matrix.config.os }}
     env:
       ARCH: x86-64-universal
@@ -34,6 +34,10 @@ jobs:
           - id: ''
             asian: 'yes'
             name: 幻神引擎-亚规            # Attack Mode BestMove, AsianRule
+          - id: ''
+            asian: 'yes'
+            krandom: 'yes'
+            name: 幻神引擎-亚规-知识随机   # Attack Mode BestMove, AsianRule, Knowledge Mode FullyRandom
           - id: 3
             name: 幻神引擎-白号纯人模式    # Attack Mode HumanLike
           - id: 4
@@ -107,7 +111,7 @@ jobs:
           fi
           BUILD=pikafish-build${{ matrix.config.ext }}
           make -j4 profile-build EXE=$BUILD RUN_PREFIX="$SDE -future --" \
-            variant=${{ matrix.variant.id }} asian=${{ matrix.variant.asian }}
+            variant=${{ matrix.variant.id }} asian=${{ matrix.variant.asian }} krandom=${{ matrix.variant.krandom }}
           make strip EXE=$BUILD
           cp "$BUILD" "../$EXE"
 

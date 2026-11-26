@@ -512,6 +512,11 @@ ifeq ($(asian),yes)
 	CXXFLAGS += -DHS_ASIAN_RULE=1
 endif
 
+# krandom=yes: default "Knowledge Mode" FullyRandom instead of BestMove (知识随机版).
+ifeq ($(krandom),yes)
+	CXXFLAGS += -DHS_KNOWLEDGE_RANDOM=1
+endif
+
 ifeq ($(COMP),)
 	COMP=gcc
 endif

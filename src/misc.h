@@ -104,6 +104,14 @@ constexpr const char* variant_attack_mode() {
 constexpr const char* default_repetition_rule() {
     return HS_ASIAN_RULE ? "AsianRule" : "SkyRule";
 }
+// Default "Knowledge Mode": FullyRandom with the Makefile flag krandom=yes
+// (知识随机版), otherwise BestMove.
+#ifndef HS_KNOWLEDGE_RANDOM
+    #define HS_KNOWLEDGE_RANDOM 0
+#endif
+constexpr const char* default_knowledge_mode() {
+    return HS_KNOWLEDGE_RANDOM ? "FullyRandom" : "BestMove";
+}
 // "Attack Mode" offers only its default with the Makefile flag lockmode=yes
 // (used by some Android builds, see .github/workflows/pikafish.yml), otherwise
 // every mode.
