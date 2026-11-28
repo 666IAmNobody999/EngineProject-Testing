@@ -19,6 +19,8 @@
 #include "winperf.h"
 
 #include <algorithm>
+#include <cstdarg>
+#include <cstdio>
 
 namespace Stockfish::WinPerf {
 
@@ -258,6 +260,45 @@ std::wstring data_dir() {
 // GUID of the plan created by the engine (kept so that it is created only once).
 std::wstring created_scheme_file() { return data_dir() + L"power_plan.guid"; }
 std::wstring state_file() { return data_dir() + L"powerplan.state"; }
+// The user's last power plan that was not the engine's own plan.
+std::wstring last_plan_file() { return data_dir() + L"lastplan.guid"; }
+std::wstring plan_log_file() { return data_dir() + L"powerplan.log"; }
+
+// Power plan diagnostics (one line per event, only at acquire / release, never
+// while searching). The file is restarted when it grows beyond 64 KB.
+void plan_log(const char* fmt, ...) {
+    std::wstring path = plan_log_file();
+    if (path.empty())
+        return;
+    char    msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char line[640];
+    int  n = std::snprintf(line, sizeof(line), "%04d-%02d-%02d %02d:%02d:%02d pid %lu: %s\r\n", t.wYear,
+                           t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond,
+                           static_cast<unsigned long>(GetCurrentProcessId()), msg);
+    if (n <= 0)
+        return;
+    std::ofstream f(path.c_str(), std::ios::binary | std::ios::app);
+    if (f.tellp() > std::streamoff(65536))
+    {
+        f.close();
+        f.open(path.c_str(), std::ios::binary | std::ios::trunc);
+    }
+    f.write(line, std::min<int>(n, int(sizeof(line)) - 1));
+}
+
+std::string guid_text(const GUID& g) {
+    char b[48];
+    std::snprintf(b, sizeof(b), "%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                  static_cast<unsigned long>(g.Data1), g.Data2, g.Data3, g.Data4[0], g.Data4[1], g.Data4[2],
+                  g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
+    return b;
+}
 
 template<typename Fn>
 bool for_each_scheme(Fn fn) {
@@ -445,7 +486,10 @@ void release_instance(DWORD pid) {
         return;
     State s;
     if (!read_state(s))
+    {
+        plan_log("release: no state file, nothing to restore");
         return;
+    }
 
     std::vector<Instance> rest;
     for (const auto& in : s.instances)
@@ -456,6 +500,7 @@ void release_instance(DWORD pid) {
 
     if (!s.instances.empty())
     {
+        plan_log("release: %u other engine instance(s) still running, plan kept", unsigned(s.instances.size()));
         write_state(s);
         return;
     }
@@ -464,7 +509,14 @@ void release_instance(DWORD pid) {
     // the user picked by hand while the engine was running is kept.
     GUID cur{};
     if (s.switched && active_scheme(cur) && same(cur, s.ultimate))
-        power().setActive(nullptr, &s.original);
+    {
+        DWORD rc = power().setActive(nullptr, &s.original);
+        plan_log("release: restored plan %s, result %lu", guid_text(s.original).c_str(),
+                 static_cast<unsigned long>(rc));
+    }
+    else
+        plan_log("release: not restored (switched %u, current plan %s)", unsigned(s.switched),
+                 active_scheme(cur) ? guid_text(cur).c_str() : "?");
     DeleteFileW(state_file().c_str());
 }
 
@@ -496,9 +548,11 @@ void spawn_watcher(DWORD pid) {
         {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
+            plan_log("watcher started (%s)", extra ? "outside the GUI job" : "inside the GUI job, may be killed with it");
             return;
         }
     }
+    plan_log("watcher could not be started, error %lu", static_cast<unsigned long>(GetLastError()));
 }
 
 std::atomic<bool> powerAcquired{false};
@@ -590,13 +644,40 @@ void acquire_power_plan() {
             // Every engine was killed before it could restore (and its watcher
             // was killed as well): the plan saved then is still the one to restore.
             bool stale = hadState && s.switched && same(s.ultimate, ult) && same(cur, ult);
+
+            // Remember the last plan that is not the engine's own, so that it can be
+            // restored even when the engine's plan was left active by an earlier run.
+            GUID last{};
+            bool haveLast = false;
+            {
+                std::ifstream lf(last_plan_file().c_str(), std::ios::binary);
+                haveLast = bool(lf.read(reinterpret_cast<char*>(&last), sizeof(last))) && !same(last, ult)
+                        && scheme_exists(last);
+            }
+            if (!same(cur, ult))
+            {
+                std::ofstream lf(last_plan_file().c_str(), std::ios::binary | std::ios::trunc);
+                lf.write(reinterpret_cast<const char*>(&cur), sizeof(cur));
+            }
+
             if (!stale)
             {
                 s          = State{};
                 s.original = cur;
                 s.ultimate = ult;
-                s.switched = !same(cur, ult) && power().setActive(nullptr, &ult) == ERROR_SUCCESS;
+                if (!same(cur, ult))
+                    s.switched = power().setActive(nullptr, &ult) == ERROR_SUCCESS;
+                else if (haveLast)
+                {
+                    // The engine's plan is already active without any engine running: a
+                    // previous run did not restore it. Go back to the last other plan on exit.
+                    s.original = last;
+                    s.switched = 1;
+                }
             }
+            plan_log("acquire: current %s, engine plan %s, restore to %s, switched %u%s", guid_text(cur).c_str(),
+                     guid_text(ult).c_str(), guid_text(s.original).c_str(), unsigned(s.switched),
+                     stale ? " (stale state)" : "");
             if (same(cur, ult))
                 power().setActive(nullptr, &ult);  // re-activate so the refreshed settings apply
         }
@@ -624,11 +705,13 @@ bool run_power_watcher(int argc, char* argv[]) {
     SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
 
     DWORD pid = DWORD(std::strtoul(argv[2], nullptr, 10));
+    plan_log("watcher running for pid %lu", static_cast<unsigned long>(pid));
     if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid))
     {
         WaitForSingleObject(h, INFINITE);
         CloseHandle(h);
     }
+    plan_log("watcher: engine pid %lu exited", static_cast<unsigned long>(pid));
     release_instance(pid);
     return true;
 }
