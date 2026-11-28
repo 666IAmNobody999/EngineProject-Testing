@@ -327,6 +327,19 @@ Search::LimitsType UCIEngine::parse_limits(std::istream& is) {
     if (ucciTime && limits.time[us] && !limits.time[them])
         limits.time[them] = limits.time[us];
 
+    // 每步限时 (go ... movestogo 1, 例如「1 秒 1 步」): 介面给的是这一步的全部时间,
+    // 改为固定步时, 算足整个时间才出招 (不再被时间管理提早收工); 缓冲由介面的超时宽限负责。
+    if (limits.movestogo == 1 && limits.time[us] > 0 && !limits.movetime && !limits.infinite
+        && !limits.ponderMode && !limits.depth && !limits.nodes && !limits.mate)
+    {
+        limits.movetime    = limits.time[us];
+        limits.time[WHITE] = 0;
+        limits.time[BLACK] = 0;
+        limits.inc[WHITE]  = 0;
+        limits.inc[BLACK]  = 0;
+        limits.movestogo   = 0;
+    }
+
     return limits;
 }
 
