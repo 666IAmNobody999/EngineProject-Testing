@@ -1756,6 +1756,10 @@ struct SkyCounters {
         {
             clear_checks();
             std::memset(chaseCnt, 0, sizeof(chaseCnt));
+            alt      = 0;
+            altCheck = false;
+            altChase = false;
+            altIds   = 0;
             if (!r.evasion)
                 exceeded |= ++killCnt > 7;
             return exceeded;
@@ -1873,6 +1877,7 @@ void Position::publish_sky_history() {
         const SkyMoveRecord& r   = rec[kills ? (i & 1) : 0][i];
         const u8             run = i + 2 < n ? s[i + 2]->skyMaybeRun : 0;
         s[i]->skyMaybeRun        = sky_offensive(r) ? u8(std::min(run + 1, 255)) : 0;
+        s[i]->skyChasers         = SKY_UNCOMPUTED;
     }
 }
 
@@ -1937,8 +1942,7 @@ bool Position::sky_chase_exceeded() {
 // large scratch objects do not burden every rule_judge() call.
 bool Position::sky_chase_verify(int run) {
 
-    StateInfo* const cur   = st;
-    const bool       qizhe = RuleConfig::repetitionRule == RuleConfig::RepetitionRule::QIZHE;
+    StateInfo* const cur = st;
 
     auto fill = [&](int plies) {
         Position scratch;
@@ -1950,25 +1954,10 @@ bool Position::sky_chase_verify(int run) {
     constexpr int MaxOwn = SkyCounterPlies / 2;
     const int     own    = std::min<int>(run, MaxOwn);
 
-    if (qizhe)
-    {
-        // Kills are not part of the Sky info: replay the exact records.
-        SkyMoveRecord rec[SkyCounterPlies];
-        if (sky_records(rec, 1, 0) != 1 || !sky_offensive(rec[0]))
-        {
-            cur->skyMaybeRun = 0;
-            return false;
-        }
-        const int   got = sky_records(rec, 2 * own - 1, 0);
-        SkyCounters c;
-        bool        exceeded = false;
-        for (int i = (got - 1) & ~1; i >= 0; i -= 2)
-            exceeded = c.step(rec[i]);
-        return exceeded;
-    }
-
-    // SkyRule: the Sky info is cached in the StateInfo chain (shared with the
-    // descendants of this node), so every state is computed once per visit.
+    // SkyRule and QiZheRule: the Sky info (including QiZheRule kills, stored as
+    // skyVictims = kingBit, skyCheckers = 1, skyChasers = moverBit) is cached in
+    // the StateInfo chain (shared with the descendants of this node), so every
+    // state is computed once per visit.
     if (!sky_cached(cur))
         fill(1);
     if (!cur->checkersBB && !cur->skyVictims)
@@ -2003,11 +1992,12 @@ bool Position::sky_chase_verify(int run) {
         SkyMoveRecord    r{};
         r.check       = bool(p->checkersBB);
         r.evasion     = bool(p->previous->checkersBB);
+        r.kill        = !r.check && p->skyCheckers != 0;
         r.checkers    = r.check ? p->skyCheckers : 0;
         r.altCheckers = r.check ? p->skyAltCheckers : 0;
-        r.victims     = r.check ? p->skyChasers : p->skyVictims;
+        r.victims     = r.check ? p->skyChasers : (r.kill ? 0 : p->skyVictims);
         r.chasers     = r.check ? 0 : p->skyChasers;
-        exceeded   = c.step(r);
+        exceeded      = c.step(r);
     }
     return exceeded;
 }
@@ -2120,8 +2110,15 @@ void Position::set_sky_info(int d) {
     for (int i = 0; i < d && st && st->previous; ++i)
     {
         StateInfo* cur = st;
-        if (cur->capturedPiece != NO_PIECE || cur->pliesFromNull == 0)
+        if (cur->pliesFromNull == 0 || !cur->move.is_ok())
             break;
+
+        if (cur->capturedPiece != NO_PIECE)
+        {
+            undo_move(cur->move, cur->capturedPiece, cur->skyCapturedId);
+            st = cur->previous;
+            continue;
+        }
 
         if (sky_cached(cur))
         {
